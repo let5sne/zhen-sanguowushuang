@@ -608,6 +608,11 @@ const SURFACES = {
   wood:new THREE.MeshPhysicalMaterial({...surfaceMaps.wood,roughness:.68,metalness:0,clearcoat:.22,clearcoatRoughness:.48,envMapIntensity:.6}),
   skin:new THREE.MeshPhysicalMaterial({...surfaceMaps.skin,roughness:.8,metalness:0,thickness:.35,sheen:.12,sheenColor:0xe9b79a,sheenRoughness:.9,envMapIntensity:.45})
 };
+/* 盾兵装备：共享几何/材质，挂在左前臂骨骼上 */
+const SHIELD_GEO = new THREE.CylinderGeometry(.46, .46, .09, 8);
+const SHIELD_MAT = new THREE.MeshStandardMaterial({ color: 0x7a5a32, roughness: .62, metalness: .28 });
+const SHIELD_GEO_LOST = null;
+
 
 /* ============================================================
    3. 天空 / 光照
@@ -1932,6 +1937,7 @@ function releaseRig(rig) {
   rig.current = null;
   rig.elapsed = 0;
   rig.lod = 60;
+  if (rig.shieldMesh) { rig.bones[8].remove(rig.shieldMesh); rig.shieldMesh = null; }
   rig.mesh.visible = false;
   rig.mesh.removeFromParent();
   const kind = rig.mesh.userData.kind;
@@ -1995,7 +2001,18 @@ function updateEnemyRigs(dt) {
     max=i;const kind=s.officer?'officer':s.type;
     if(s.rig&&s.rig.mesh.userData.kind!==kind){ releaseRig(s.rig); s.rig=null; }
     if(!s.rig){ s.rig=acquireRig(kind); scene.add(s.rig.mesh); }
-    const r=s.rig;if(!r.mesh.parent)scene.add(r.mesh);r.mesh.visible=true;r.mesh.position.copy(s.pos);r.mesh.rotation.set(s.tilt,s.yaw,0,'YXZ');r.mesh.scale.setScalar(s.scale);
+    const r=s.rig;if(!r.mesh.parent)scene.add(r.mesh);r.mesh.visible=true;
+    /* 盾牌：仅前排盾兵，挂左前臂骨骼 */
+    const wantShield = s.role === 'front' && s.shield > 0 && !s.dead;
+    if (wantShield && !r.shieldMesh) {
+      const m = new THREE.Mesh(SHIELD_GEO, SHIELD_MAT);
+      m.position.set(0, -0.04, 0.10); m.rotation.set(Math.PI / 2, 0, 0);
+      m.castShadow = false;   /* 省一张 shadow draw call */
+      r.bones[8].add(m); r.shieldMesh = m;
+    } else if (!wantShield && r.shieldMesh) {
+      r.bones[8].remove(r.shieldMesh); r.shieldMesh = null;
+    }
+r.mesh.position.copy(s.pos);r.mesh.rotation.set(s.tilt,s.yaw,0,'YXZ');r.mesh.scale.setScalar(s.scale);
     const name=s.dead?'die':s.state==='stagger'?'hit':s.state==='wind'||s.state==='strike'||s.state==='rec'?'atk1':s.state==='chase'?'run':'idle';
     const changed=r.current!==name;playRig(r,name);
     r.timeOverride=null;
@@ -2111,6 +2128,7 @@ function spawnEnemy(type, x, z, opt = {}) {
   /* 阵型角色：刀兵前排、枪兵侧翼、弓兵后排 */
   s.role = opt.officer ? 'boss' : (type === 'archer' ? 'back' : (type === 'spear' ? 'flank' : 'front'));
   s.side = Math.random() < .5 ? -1 : 1;
+  s.shield = (s.role === 'front' && Math.random() < .6) ? 1 : 0;   /* 混合阵线：六成持盾 */
   s.tint.set(opt.tint ?? d.tint);
   if (opt.officer) s.tint.set(opt.tint || 0xd8b25a);
   return s;
@@ -2136,6 +2154,23 @@ function shake(mag, dur) { shakeMag = Math.max(shakeMag, mag); shakeT = Math.max
 
 function damageEnemy(s, dmg, dirX, dirZ, heavy) {
   if (s.dead || !s.active) return;
+  /* 盾兵：正面来袭减伤 30%，累计到阈值破防（重击一次破） */
+  if (s.shield > 0 && s.role === 'front') {
+    const facingDot0 = dirX * Math.sin(s.yaw) + dirZ * Math.cos(s.yaw);
+    if (facingDot0 < -0.35) {
+      dmg *= 0.70;
+      s.shield -= heavy ? 1 : 0.34;
+      const sp = _v3.set(s.pos.x - dirX * .5, 1.25, s.pos.z - dirZ * .5);
+      burst(sp, 6, { color: 0xfff0c0, speed: 5, up: 2, life: .22, size: .2, grav: -10 });
+      if (s.shield <= 0) {
+        s.shield = 0;
+        s.state = 'stagger'; s.t = 0; s.atkP = 0;
+        popDamage(_v3.copy(s.pos).setY(2.2), '破防', 'parry');
+        SFX.parry();
+        shockRing(s.pos, 2.2, .28, 0xffd9a0);
+      }
+    }
+  }
   s.hp -= dmg; s.flash = 1;
   const p = _v3.copy(s.pos); p.y = 1.25;
   popDamage(p, Math.round(dmg), heavy ? 'crit' : '');
@@ -3597,6 +3632,7 @@ window.__dbg = {
   jump() { tryJump(); return player.airY; },
   execute() { return tryExecute(); },
   light() { tryLight(); },
+  damageEnemy(a, b, c, d, e) { damageEnemy(a, b, c, d, e); },
   dash() { tryDash(); },
   jumpKey() { tryJump(); },
   airAttack() { return tryAirAttack(); },
