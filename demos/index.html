@@ -2108,6 +2108,9 @@ function spawnEnemy(type, x, z, opt = {}) {
   s.state = 'chase'; s.t = 0; s.atkP = 0; s.cool = rand(.2, 1.4); s.phase = rand(0, TAU);
   s.flash = 0; s.tilt = 0; s.dead = false; s.deadT = 0; s.spawnT = 0;
   s.officer = !!opt.officer; s.name = opt.name || '';
+  /* 阵型角色：刀兵前排、枪兵侧翼、弓兵后排 */
+  s.role = opt.officer ? 'boss' : (type === 'archer' ? 'back' : (type === 'spear' ? 'flank' : 'front'));
+  s.side = Math.random() < .5 ? -1 : 1;
   s.tint.set(opt.tint ?? d.tint);
   if (opt.officer) s.tint.set(opt.tint || 0xd8b25a);
   return s;
@@ -2179,7 +2182,25 @@ function rebuildGrid() {
   }
 }
 
+function updateVolley(dt) {
+  const ready = [];
+  for (const s of E) {
+    if (!s.active || s.dead || s.type !== 'archer' || s.officer) continue;
+    const d = s.distToPlayer || 0;
+    if (s.state === 'chase' && s.cool <= 0 && d > 8 && d < 18) ready.push(s);
+  }
+  G.volleyT = (G.volleyT || 0) - dt;
+  if (G.volleyT > 0) return;
+  if (ready.length >= 3) {
+    for (const s of ready) { s.state = 'wind'; s.t = -0.42; s.cool = rand(2.2, 3.4); }
+    G.volleyT = 5.2;
+    callout('齐 射', '弓 兵');
+    SFX.drum(.9);
+  } else G.volleyT = 0.9;
+}
+
 function updateEnemies(dt) {
+  updateVolley(dt);
   const px = player.pos.x, pz = player.pos.z;
   rebuildGrid();
   for (let i = 0; i < MAXE; i++) {
@@ -2202,6 +2223,7 @@ function updateEnemies(dt) {
     s.cool -= dt;
     s.t += dt;
     const ox = s.pos.x, oz = s.pos.z;
+    s.distToPlayer = dist;
 
     /* 敌将技能：独立状态，带明显前摇 */
     if (s.state === 'skill') {
@@ -2294,9 +2316,10 @@ function updateEnemies(dt) {
         if (s.cool <= 0 && dist < s.range && dist > 4) {
           s.state = 'wind'; s.t = 0; s.cool = rand(1.8, 3.4);
         }
-      } else {
+      } else if (s.role === 'front' || s.officer) {
+        /* 前排：正面直推 */
         if (dist > s.range * .82) { mvx = nx; mvz = nz; }
-        else if (s.officer && s.skillCd <= 0 && dist < 7.5 && s.state === 'chase') {
+        else if (s.officer && s.skillCd <= 0 && dist < 7.5) {
           s.state = 'skill'; s.t = 0; s.atkP = 0; s.skillDone = false;
           s.cool = 1.2;
           callout(s.name, s.skillKind === 'charge' ? '突 击' : '横 扫');
@@ -2307,11 +2330,18 @@ function updateEnemies(dt) {
           s.strafeT -= dt;
           if (s.strafeT <= 0) { s.strafeT = rand(.6, 1.6); s.strafe *= -1; }
           mvx = -nz * s.strafe * .45; mvz = nx * s.strafe * .45;
-          if (s.cool <= 0 && attackTokens < MAX_TOKENS) {
-            s.state = 'wind'; s.t = 0; attackTokens++;
-            s.cool = rand(1.4, 2.8);
-          }
         }
+      } else {
+        /* 侧翼：中距离带切向分量，弧线绕到侧面再收拢 */
+        const tan = s.side * 0.95 * clamp((dist - 3.2) / 5.5, 0, 1);
+        mvx = nx - nz * tan; mvz = nz + nx * tan;
+      }
+
+      /* 近战：进入攻击距离且令牌可用就抬手 */
+      if (s.type !== 'archer' && !s.officer && s.cool <= 0 && dist < s.range * .92 && attackTokens < MAX_TOKENS) {
+        s.state = 'wind'; s.t = 0; attackTokens++;
+        s.cool = rand(1.4, 2.8);
+        continue;
       }
 
       const ml = Math.hypot(mvx, mvz);
@@ -3246,7 +3276,7 @@ function resetGame() {
   player.dashT = 0; player.dashCd = 0;
   player.dmgMul = 1; player.atkMul = 1; player.musouMul = 1; player.rangeMul = 1;
   player.poise = player.maxPoise; player.poiseT = 0; player.poiseRegen = 0;
-  player.airY = 0; player.vy = 0; player.airAtk = false; player.pos.y = 0;
+  player.airY = 0; player.vy = 0; player.airAtk = false; player.pos.y = 0; G.volleyT = 0;
   player.leech = 0; player.upgrades.length = 0; pendingUpgrades = []; G.offering = false;
   $('#upgrade').classList.add('hide');
   camYaw = 0; camPitch = 0.20;
