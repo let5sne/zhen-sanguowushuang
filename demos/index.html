@@ -58,6 +58,9 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0a0908;color:#f0e6d
   position:relative;overflow:hidden;margin-bottom:6px}
 .bar i{position:absolute;inset:0;transform-origin:left;transition:transform .16s}
 #hpF{background:linear-gradient(90deg,#7d1a12,#d8452f 70%,#ff8a5c)}
+#poise{display:flex;gap:4px;margin-top:5px}
+#poise i{width:16px;height:4px;background:rgba(255,255,255,.16);transition:background .15s}
+#poise i.on{background:#9fd0ff;box-shadow:0 0 6px rgba(159,208,255,.55)}
 #hpB{background:rgba(255,235,200,.45);transition:transform .8s .12s}
 #musouF{background:linear-gradient(90deg,#1d4f7a,#3f9fd8 60%,#a8e4ff)}
 #musou.full #musouF{background:linear-gradient(90deg,#c9a227,#ffe9a3 60%,#fff);
@@ -161,6 +164,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0a0908;color:#f0e6d
         <div id="nm">赵云 · 子龙</div>
         <div class="bar" id="hp"><i id="hpF"></i><i id="hpB"></i></div>
         <div class="bar" id="musou"><i id="musouF"></i><span>无双</span></div>
+        <div id="poise"></div>
       </div>
     </div>
   </div>
@@ -2246,6 +2250,8 @@ const player = {
   combo: 0, comboT: 0, ko: 0, dashT: 0, dashCd: 0, invuln: 0, dead: false,
   radius: 0.5, speed: 6.4, sprintMul: 1.5, hurtT: 0, musouT: 0,
   blocking: false, blockT: 0, blocking0: false, charging: false, chargeT: 0, stepT: 0, walkP: 0, moving: false,
+  /* 霸体：蓄力/重击后可硬吃 N 次攻击，不进硬直不断连击 */
+  poise: 2, maxPoise: 2, poiseT: 0,
   atk: null, lock: null, airY: 0,
   /* 局内成长（每 25 击破三选一） */
   dmgMul: 1, atkMul: 1, musouMul: 1, rangeMul: 1, leech: 0, upgrades: []
@@ -2461,6 +2467,11 @@ function updatePlayer(dt) {
     }
     if (player.musouT <= 0) { player.state = 'idle'; }
   }
+  if (player.poiseT > 0) player.poiseT -= dt;
+  else if (player.poise < player.maxPoise && !player.charging) {
+    player.poiseRegen = (player.poiseRegen || 0) + dt;
+    if (player.poiseRegen >= 2.2) { player.poiseRegen = 0; player.poise++; }
+  } else player.poiseRegen = 0;
   if (player.flashT > 0) {
     player.flashT -= dt;
     if (player.flashT <= 0) $('#mflash').classList.remove('on');
@@ -2592,6 +2603,21 @@ function damagePlayer(dmg, nx, nz) {
     player.hp -= dmg;
     player.musou = clamp(player.musou + 1.5, 0, player.maxMusou);
     player.invuln = Math.max(player.invuln, 0.15);
+    if (player.hp <= 0) { player.hp = 0; playerDie(); }
+    return;
+  }
+  /* 霸体：蓄力重击期间（或刚挥出重击的 0.45 s 内）可硬吃攻击 */
+  if (player.poise > 0 && (player.charging || player.poiseT > 0)) {
+    player.poise--;
+    player.poiseT = 3.2;
+    player.hp -= dmg * 0.6;
+    player.invuln = Math.max(player.invuln, 0.12);
+    player.hurtT = 0;
+    hitStop = Math.max(hitStop, 0.03);
+    shake(.18, .12);
+    SFX.block();
+    burst(_v3.copy(player.pos).setY(1.35), 10, { color: 0x9fd0ff, speed: 5, up: 2, life: .32, size: .3, grav: -8 });
+    popDamage(_v3.copy(player.pos).setY(2.05), '霸体', 'parry');
     if (player.hp <= 0) { player.hp = 0; playerDie(); }
     return;
   }
@@ -2762,6 +2788,7 @@ function releaseHeavy() {
   player.atk.power = pw;
   player.charging = false; player.chargeT = 0;
   if (pw > 1.2) { shake(.3, .3); shockRing(player.pos, 4, .4, 0xffd9a0); }
+  player.poiseT = Math.max(player.poiseT, 0.45);   /* 重击挥出瞬间也有霸体 */
 }
 function tryDash() {
   if (player.dashCd > 0 || player.dead || player.state === 'attack' || player.hurtT > 0) return;
@@ -2832,7 +2859,7 @@ const UI = {
   ko: $('#koN'), timer: $('#timer'), hpF: $('#hpF'), hpB: $('#hpB'),
   musou: $('#musou'), musouF: $('#musouF'), combo: $('#combo'), comboN: $('#comboN'),
   rank: $('#rank'), boss: $('#boss'), bossName: $('#boss .nm'), bossF: $('#boss .bar i'), bossB: $('#boss .bar u'),
-  hud: $('#hud'), call: $('#call'), callBig: $('#call .big'), callSub: $('#call .sub'),
+  hud: $('#hud'), call: $('#call'), callBig: $('#call .big'), callSub: $('#call .sub'), poise: $('#poise'),
   mflash: $('#mflash')
 };
 let hpShown = 100, bossShown = 1, callT = 0;
@@ -2853,6 +2880,12 @@ function updateHUD(dt) {
   UI.musouF.style.transform = `scaleX(${mk})`;
   UI.musou.classList.toggle('full', mk >= 0.999);
   UI.ko.textContent = player.ko;
+  const pk = UI.poise.children;
+  if (pk.length !== player.maxPoise) {
+    UI.poise.innerHTML = '';
+    for (let i = 0; i < player.maxPoise; i++) UI.poise.appendChild(document.createElement('i'));
+  }
+  for (let i = 0; i < pk.length; i++) pk[i].className = i < player.poise ? 'on' : '';
   const t = Math.floor(G.time);
   UI.timer.textContent = String((t / 60) | 0).padStart(2, '0') + ':' + String(t % 60).padStart(2, '0');
 
@@ -2940,6 +2973,7 @@ function resetGame() {
   player.invuln = 0; player.hurtT = 0; player.chargeT = 0; player.charging = false;
   player.dashT = 0; player.dashCd = 0;
   player.dmgMul = 1; player.atkMul = 1; player.musouMul = 1; player.rangeMul = 1;
+  player.poise = player.maxPoise; player.poiseT = 0; player.poiseRegen = 0;
   player.leech = 0; player.upgrades.length = 0; pendingUpgrades = []; G.offering = false;
   $('#upgrade').classList.add('hide');
   camYaw = 0; camPitch = 0.20;
