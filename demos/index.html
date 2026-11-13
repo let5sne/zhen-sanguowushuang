@@ -2211,6 +2211,7 @@ function damageEnemy(s, dmg, dirX, dirZ, heavy) {
       if (s.shield <= 0) {
         s.shield = 0;
         s.state = 'stagger'; s.t = 0; s.atkP = 0;
+        if (s.role === 'front') s.role = 'flank';   /* 盾没了就退为侧翼 */
         popDamage(_v3.copy(s.pos).setY(2.2), '破防', 'parry');
         SFX.parry();
         shockRing(s.pos, 2.2, .28, 0xffd9a0);
@@ -2263,6 +2264,32 @@ function rebuildGrid() {
   }
 }
 
+/* 阵型重整：前排被打崩后，最近的侧翼补到前排 */
+function reformFormation(dt) {
+  G.reformT = (G.reformT || 0) - dt;
+  if (G.reformT > 0) return;
+  G.reformT = 1.5;
+  let front = 0, flank = 0;
+  const cand = [];
+  for (const s of E) {
+    if (!s.active || s.dead || s.officer) continue;
+    const d = Math.hypot(s.pos.x - player.pos.x, s.pos.z - player.pos.z);
+    if (d > 22) continue;
+    if (s.role === 'front') front++;
+    else if (s.role === 'flank') { flank++; cand.push([d, s]); }
+  }
+  const melee = front + flank;
+  if (melee < 4 || flank === 0) return;
+  const wantFront = Math.ceil(melee * 0.45);
+  if (front >= wantFront) return;
+  cand.sort((a, b) => a[0] - b[0]);
+  let need = wantFront - front;
+  for (const [, s] of cand) {
+    if (need-- <= 0) break;
+    s.role = 'front';
+  }
+}
+
 function updateVolley(dt) {
   const ready = [];
   for (const s of E) {
@@ -2284,6 +2311,7 @@ function updateVolley(dt) {
 }
 
 function updateEnemies(dt) {
+  reformFormation(dt);
   updateVolley(dt);
   const px = player.pos.x, pz = player.pos.z;
   rebuildGrid();
@@ -3360,7 +3388,7 @@ function resetGame() {
   player.dashT = 0; player.dashCd = 0;
   player.dmgMul = 1; player.atkMul = 1; player.musouMul = 1; player.rangeMul = 1;
   player.poise = player.maxPoise; player.poiseT = 0; player.poiseRegen = 0;
-  player.airY = 0; player.vy = 0; player.airAtk = false; player.pos.y = 0; G.volleyT = 0;
+  player.airY = 0; player.vy = 0; player.airAtk = false; player.pos.y = 0; G.volleyT = 0; G.reformT = 0;
   player.leech = 0; player.upgrades.length = 0; pendingUpgrades = []; G.offering = false;
   $('#upgrade').classList.add('hide');
   camYaw = 0; camPitch = 0.20;
@@ -3682,6 +3710,7 @@ window.__dbg = {
   execute() { return tryExecute(); },
   light() { tryLight(); },
   damageEnemy(a, b, c, d, e) { damageEnemy(a, b, c, d, e); },
+  roles() { const r = { front: 0, flank: 0, back: 0, boss: 0 }; for (const s of E) if (s.active && !s.dead && r[s.role] !== undefined) r[s.role]++; return r; },
   volleyWarn: () => ({ level: volleyWarn.level, on: volleyWarn.on, t: +volleyWarn.t.toFixed(2), scale: +volleyWarn.m.scale.x.toFixed(2), x: +volleyWarn.m.position.x.toFixed(1), z: +volleyWarn.m.position.z.toFixed(1) }),
   dash() { tryDash(); },
   jumpKey() { tryJump(); },
