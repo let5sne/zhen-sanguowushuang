@@ -2200,6 +2200,9 @@ function shake(mag, dur) { shakeMag = Math.max(shakeMag, mag); shakeT = Math.max
 
 function damageEnemy(s, dmg, dirX, dirZ, heavy) {
   if (s.dead || !s.active) return;
+  /* heavy 可为布尔（旧调用）或 0..1.2 的权重（新调用）：权重决定顿帧/震屏/火花量级 */
+  const w = typeof heavy === 'number' ? heavy : (heavy ? 1 : 0.45);
+  const isHeavy = w >= 0.85;
   /* 盾兵：正面来袭减伤 30%，累计到阈值破防（重击一次破） */
   if (s.shield > 0 && s.role === 'front') {
     const facingDot0 = dirX * Math.sin(s.yaw) + dirZ * Math.cos(s.yaw);
@@ -2220,13 +2223,16 @@ function damageEnemy(s, dmg, dirX, dirZ, heavy) {
   }
   s.hp -= dmg; s.flash = 1;
   const p = _v3.copy(s.pos); p.y = 1.25;
-  popDamage(p, Math.round(dmg), heavy ? 'crit' : '');
-  burst(p, heavy ? 10 : 5, { color: 0xffd9a0, speed: heavy ? 7 : 4, up: 2.4, life: .28, size: heavy ? .38 : .24, grav: -9 });
-  SFX.hit(heavy);
-  hitStop = Math.max(hitStop, heavy ? 0.075 : 0.035);
-  shake(heavy ? 0.26 : 0.10, heavy ? 0.20 : 0.10);
-  s.pos.x += dirX * (heavy ? 0.55 : 0.18);
-  s.pos.z += dirZ * (heavy ? 0.55 : 0.18);
+  popDamage(p, Math.round(dmg), w >= .85 ? 'crit' : '');
+  burst(p, Math.round(3 + w * 8), {
+    color: w >= 1.0 ? 0xffc27a : (w >= .7 ? 0xffd9a0 : 0xfff2d0),
+    speed: 3 + w * 4, up: 2.4, life: .28, size: .18 + w * .2, grav: -9
+  });
+  SFX.hit(isHeavy);
+  hitStop = Math.max(hitStop, .03 + w * .045);
+  shake(.06 + w * .2, .07 + w * .13);
+  s.pos.x += dirX * (.14 + w * .4);
+  s.pos.z += dirZ * (.14 + w * .4);
   /* 方向性硬直：正 = 前倾（从背后被打），负 = 后仰（正面被打） */
   /* 敌将架势：命中积攒，满 100 可处刑 */
   if (s.officer) {
@@ -2691,7 +2697,8 @@ let mouseL = false, mouseR = false;
 function startAttack(stage, dur, heavy) {
   player.state = 'attack'; player.atkStage = stage; player.t = 0;
   player.atkDur = dur * player.atkMul; player.atkDone = false;
-  player.atk = { stage, heavy, hit: new Set() };
+  const WEIGHT = [0.45, 0.5, 0.8];
+  player.atk = { stage, heavy, hit: new Set(), weight: heavy ? 1.0 : (WEIGHT[stage] ?? 0.5) };
   playRig(heroRig,heavy?'heavy':'atk'+(stage+1),dur,true);
   SFX.swing(heavy);
 }
@@ -2784,7 +2791,7 @@ function updatePlayer(dt) {
         const mdx = s.pos.x - player.pos.x, mdz = s.pos.z - player.pos.z;
         if (mdx * mdx + mdz * mdz < 25) {
           const md = Math.hypot(mdx, mdz) || 1;
-          damageEnemy(s, 26, mdx / md, mdz / md, true);
+          damageEnemy(s, 26, mdx / md, mdz / md, 1.0);
         }
       }
       burst(_v3.copy(player.pos).setY(1.2), 10, { color: 0x9fd8ff, speed: 9, up: 2, life: .45, size: .5, grav: -4 });
@@ -2812,7 +2819,7 @@ function updatePlayer(dt) {
           if (!s.active || s.dead) continue;
           const ldx = s.pos.x - player.pos.x, ldz = s.pos.z - player.pos.z;
           const ld = Math.hypot(ldx, ldz);
-          if (ld < 3.9) damageEnemy(s, 46 * player.dmgMul, ldx / (ld || 1), ldz / (ld || 1), true);
+          if (ld < 3.9) damageEnemy(s, 46 * player.dmgMul, ldx / (ld || 1), ldz / (ld || 1), 1.15);
         }
         burst(_v3.copy(player.pos).setY(.18), 18, { color: 0xd8c8a8, speed: 6, up: 2.4, life: .5, size: .6, grav: -6, drag: 2.4 });
       } else {
@@ -2921,7 +2928,7 @@ function resolvePlayerHit(atk) {
     if (d > range + s.scale * 0.45) continue;
     if (Math.abs(angDiff(Math.atan2(dx, dz), player.yaw)) > halfArc) continue;
     const nx = dx / (d || 1), nz = dz / (d || 1);
-    damageEnemy(s, dmg * rand(.92, 1.08), nx, nz, heavy || stage === 2);
+    damageEnemy(s, dmg * rand(.92, 1.08), nx, nz, atk.weight ?? (heavy ? 1 : 0.5));
     hits++;
     if (hits > 28) break;   /* 一次挥击最多结算 28 个目标（伤害数字有池，DOM 无压力） */
   }
@@ -3154,7 +3161,7 @@ function tryDashAttack() {
   player.dashCd = Math.max(player.dashCd, 0.18);
   aimAssist(5.2, 0.6);
   startAttack(2, 0.36, false);
-  player.atk.power = 1.15;
+  player.atk.power = 1.15; player.atk.weight = 0.7;
   player.vel.x = Math.sin(player.yaw) * 13;
   player.vel.z = Math.cos(player.yaw) * 13;
   SFX.swing(true);
@@ -3231,7 +3238,7 @@ function tryExecute() {
   burst(_v3.copy(b.pos).setY(1.5), 26, { color: 0x9fd0ff, speed: 9, up: 4, life: .7, size: .55, grav: -6 });
   popDamage(_v3.copy(b.pos).setY(2.4), '处刑', 'parry');
   callout('处 刑', b.name);
-  damageEnemy(b, Math.max(420, b.maxhp * 0.34), dx / (d || 1), dz / (d || 1), true);
+  damageEnemy(b, Math.max(420, b.maxhp * 0.34), dx / (d || 1), dz / (d || 1), 1.2);
   return true;
 }
 
@@ -3739,6 +3746,8 @@ window.__dbg = {
   execute() { return tryExecute(); },
   light() { tryLight(); },
   damageEnemy(a, b, c, d, e) { damageEnemy(a, b, c, d, e); },
+  fx: () => ({ hitStop: +hitStop.toFixed(3), shakeMag: +shakeMag.toFixed(2), shakeT: +shakeT.toFixed(2) }),
+  clearFx: () => { hitStop = 0; shakeMag = 0; shakeT = 0; },
   pressure: () => ({ v: +PRESSURE.v.toFixed(2), tier: PRESSURE.tier, spawnMul: +PRESSURE.spawnMul.toFixed(2), volleyMul: +PRESSURE.volleyMul.toFixed(2), skillMul: +PRESSURE.skillMul.toFixed(2) }),
   roles() { const r = { front: 0, flank: 0, back: 0, boss: 0 }; for (const s of E) if (s.active && !s.dead && r[s.role] !== undefined) r[s.role]++; return r; },
   volleyWarn: () => ({ level: volleyWarn.level, on: volleyWarn.on, t: +volleyWarn.t.toFixed(2), scale: +volleyWarn.m.scale.x.toFixed(2), x: +volleyWarn.m.position.x.toFixed(1), z: +volleyWarn.m.position.z.toFixed(1) }),
