@@ -2734,16 +2734,16 @@ function updatePlayer(dt) {
     const wx = ix * Math.cos(cy) + iz * Math.sin(cy);
     const wz = -ix * Math.sin(cy) + iz * Math.cos(cy);
     const sp = player.speed * (keys['shift'] ? player.sprintMul : 1) * (player.state === 'musou' ? .35 : 1) * (player.blocking ? .35 : 1);
-    player.vel.x = damp(player.vel.x, wx * sp, 12, dt);
-    player.vel.z = damp(player.vel.z, wz * sp, 12, dt);
+    player.vel.x = damp(player.vel.x, wx * sp, 22, dt);
+    player.vel.z = damp(player.vel.z, wz * sp, 22, dt);
     if (player.state !== 'attack' && player.state !== 'musou')
-      player.yaw = angTo(player.yaw, Math.atan2(wx, wz), dt * 12);
+      player.yaw = angTo(player.yaw, Math.atan2(wx, wz), dt * 22);
     player.walkP += dt * (keys['shift'] ? 13 : 9);
     player.stepT -= dt * (keys['shift'] ? 1.7 : 1.2);
     if (player.stepT <= 0) { player.stepT = 0.3; SFX.step(); }
   } else {
-    player.vel.x = damp(player.vel.x, 0, 14, dt);
-    player.vel.z = damp(player.vel.z, 0, 14, dt);
+    player.vel.x = damp(player.vel.x, 0, 26, dt);
+    player.vel.z = damp(player.vel.z, 0, 26, dt);
   }
 
   /* 闪避 */
@@ -2781,7 +2781,10 @@ function updatePlayer(dt) {
       player.atkDone = true;
       resolvePlayerHit(player.atk);
     }
-    if (player.atkP >= 1) { player.state = 'idle'; player.atk = null; }
+    if (player.atkP >= 1) {
+      player.state = 'idle'; player.atk = null;
+      if (player.queued) { player.queued = false; tryLight(); }
+    }
   }
   if (player.state === 'musou') {
     player.musouT -= dt;
@@ -3098,7 +3101,8 @@ function updateArrows(dt) {
 let camYaw = 0, camPitch = 0.24, camDist = 7.0;
 const camTarget = new THREE.Vector3();
 const camPos = new THREE.Vector3();
-const SENS = 0.0026;
+const SENS = (() => { const q = parseFloat(new URLSearchParams(location.search).get('sens')); return isFinite(q) && q > 0 ? q : 0.0030; })();
+let lastMouseMove = -10;
 let pointerLocked = false;
 
 function updateCamera(dt) {
@@ -3110,7 +3114,9 @@ function updateCamera(dt) {
   if (player.lock) {
     const dx = player.lock.pos.x - p.x, dz = player.lock.pos.z - p.z;
     const want = Math.atan2(-dx, -dz);
-    camYaw = camYaw + angDiff(want, camYaw) * Math.min(1, dt * 4.5);
+    /* 鼠标活动时完全让位给玩家（避免"转不动视角"），停手 0.7s 后才轻柔回正 */
+    if (performance.now() / 1000 - lastMouseMove > 0.7)
+      camYaw = camYaw + angDiff(want, camYaw) * Math.min(1, dt * 6);
   }
 
   const cp = Math.cos(camPitch), sp = Math.sin(camPitch);
@@ -3123,7 +3129,7 @@ function updateCamera(dt) {
   );
   if (camPos.y < 0.7) camPos.y = 0.7;
 
-  camera.position.lerp(camPos, 1 - Math.exp(-12 * dt));
+  camera.position.lerp(camPos, 1 - Math.exp(-22 * dt));
 
   const shakeAmt = shakeT > 0 ? shakeMag * (shakeT / 0.3) : 0;
   camera.lookAt(camTarget);
@@ -3174,7 +3180,7 @@ function tryDashAttack() {
 function tryLight() {
   if (tryDashAttack()) return;
   if (G.state !== 'play' || player.dead) return;
-  if (player.state === 'attack') { if (player.atkP > 0.2) player.queued = true; return; }
+  if (player.state === 'attack') { player.queued = true; return; }
   if (player.state === 'musou' || player.hurtT > 0) return;
   if (chainT <= 0) chain = 0;
   aimAssist(4.4, 0.30);
@@ -3296,6 +3302,7 @@ addEventListener('mouseup', e => {
 addEventListener('contextmenu', e => e.preventDefault());
 addEventListener('mousemove', e => {
   if (!pointerLocked && !dragging) return;
+  lastMouseMove = performance.now() / 1000;
   camYaw -= (e.movementX || 0) * SENS;
   camPitch = clamp(camPitch + (e.movementY || 0) * SENS, -0.18, 0.95);
 });
