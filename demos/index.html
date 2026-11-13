@@ -1692,6 +1692,22 @@ const rings = [];
     rings.push({ m, t: 0, dur: 1, from: 1, to: 6, on: false });
   }
 }
+/* 齐射落点预警环：从 5.6m 收缩到 1.1m，收缩完即箭落 */
+const volleyWarn = { m: null, t: 0, dur: 1.15, on: false };
+{
+  const m = new THREE.Mesh(new THREE.RingGeometry(.84, 1, 44), new THREE.MeshBasicMaterial({
+    color: 0xffb060, transparent: true, opacity: 0, side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  }));
+  m.rotation.x = -Math.PI / 2; m.position.y = 0.07; m.visible = false; m.renderOrder = 5;
+  scene.add(m); volleyWarn.m = m;
+}
+function showVolleyWarn(x, z) {
+  volleyWarn.on = true; volleyWarn.t = 0;
+  volleyWarn.m.position.set(x, 0.07, z);
+  volleyWarn.m.visible = true;
+}
+
 function shockRing(pos, to = 6, dur = .5, color = 0xffd9a0) {
   const r = rings.find(r => !r.on) || rings[0];
   r.on = true; r.t = 0; r.dur = dur; r.to = to;
@@ -1706,6 +1722,19 @@ function updateRings(dt) {
     const s = lerp(.6, r.to, smooth(k));
     r.m.scale.set(s, s, s);
     r.m.material.opacity = (1 - k) * .85;
+  }
+  /* 齐射预警：收缩环 + 越接近越红越急 */
+  if (volleyWarn.on) {
+    volleyWarn.t += dt;
+    const k = volleyWarn.t / volleyWarn.dur;
+    if (k >= 1) {
+      volleyWarn.on = false; volleyWarn.m.visible = false;
+    } else {
+      const sc = lerp(5.6, 1.1, k * k);
+      volleyWarn.m.scale.set(sc, sc, sc);
+      volleyWarn.m.material.opacity = .35 + .45 * Math.abs(Math.sin(volleyWarn.t * (9 + k * 12)));
+      volleyWarn.m.material.color.setRGB(1, lerp(.69, .22, k), lerp(.38, .16, k));
+    }
   }
 }
 
@@ -2228,6 +2257,7 @@ function updateVolley(dt) {
   if (G.volleyT > 0) return;
   if (ready.length >= 3) {
     for (const s of ready) { s.state = 'wind'; s.t = -0.42; s.cool = rand(2.2, 3.4); }
+    showVolleyWarn(player.pos.x, player.pos.z);
     G.volleyT = 5.2;
     callout('齐 射', '弓 兵');
     SFX.drum(.9);
@@ -3633,6 +3663,7 @@ window.__dbg = {
   execute() { return tryExecute(); },
   light() { tryLight(); },
   damageEnemy(a, b, c, d, e) { damageEnemy(a, b, c, d, e); },
+  volleyWarn: () => ({ on: volleyWarn.on, t: +volleyWarn.t.toFixed(2), scale: +volleyWarn.m.scale.x.toFixed(2), x: +volleyWarn.m.position.x.toFixed(1), z: +volleyWarn.m.position.z.toFixed(1) }),
   dash() { tryDash(); },
   jumpKey() { tryJump(); },
   airAttack() { return tryAirAttack(); },
