@@ -2290,6 +2290,34 @@ function reformFormation(dt) {
   }
 }
 
+/* 动态难度：只调节奏（刷兵/齐射/技能冷却），不动伤害数值——避免破坏验收基线 */
+const PRESSURE = {
+  v: 0, t: 0, lastKo: 0, tier: 0,
+  spawnMul: 1.1, volleyMul: 1.0, skillMul: 1.15,
+  step(dt) {
+    this.t += dt;
+    if (this.t < 2) return;
+    this.t = 0;
+    const koRate = (player.ko - this.lastKo) / 2;
+    this.lastKo = player.ko;
+    const hpFrac = player.hp / player.maxhp;
+    if (koRate >= 3 && hpFrac > 0.75) this.v = Math.min(1, this.v + 0.14);
+    else if (hpFrac < 0.35) this.v = Math.max(0, this.v - 0.18);
+    else this.v = Math.max(0, this.v - 0.04);
+    this.spawnMul = 1.30 - 0.55 * this.v;
+    this.volleyMul = 1.28 - 0.48 * this.v;
+    this.skillMul = 1.35 - 0.60 * this.v;
+    const tier = this.v > 0.66 ? 2 : (this.v > 0.33 ? 1 : 0);
+    if (tier !== this.tier) {
+      this.tier = tier;
+      if (tier === 2) callout('敌 军 压 上', '士 气 高 涨');
+      else if (tier === 0 && player.ko > 5) callout('敌 军 迟 疑', '士 气 低 落');
+      SFX.drum(tier === 2 ? 1.3 : .9);
+    }
+  },
+  reset() { this.v = 0; this.t = 0; this.lastKo = player.ko; this.tier = 0; this.spawnMul = 1.1; this.volleyMul = 1.0; this.skillMul = 1.15; }
+};
+
 function updateVolley(dt) {
   const ready = [];
   for (const s of E) {
@@ -2303,7 +2331,7 @@ function updateVolley(dt) {
     for (const s of ready) { s.state = 'wind'; s.t = -0.42; s.cool = rand(2.2, 3.4); }
     const heavy = ready.length >= 6;
     showVolleyWarn(player.pos.x, player.pos.z, heavy ? 2 : 1);
-    G.volleyT = heavy ? 6.4 : 5.2;
+    G.volleyT = (heavy ? 6.4 : 5.2) * PRESSURE.volleyMul;
     callout(heavy ? '大 阵 齐 射' : '齐 射', heavy ? `${ready.length} 弓` : '弓 兵');
     SFX.drum(heavy ? 1.45 : .9);
     if (heavy) { SFX.officer(); shake(.22, .3); }
@@ -2311,6 +2339,7 @@ function updateVolley(dt) {
 }
 
 function updateEnemies(dt) {
+  PRESSURE.step(dt);
   reformFormation(dt);
   updateVolley(dt);
   const px = player.pos.x, pz = player.pos.z;
@@ -2379,7 +2408,7 @@ function updateEnemies(dt) {
         }
       } else if (s.t >= wind + active + rec) {
         s.state = 'chase'; s.t = 0; s.atkP = 0; s.skillDone = false;
-        s.skillCd = rand(6, 9);
+        s.skillCd = rand(6, 9) * PRESSURE.skillMul;
       }
       s.cool = Math.max(s.cool, 0.4);
       s.pos.y = damp(s.pos.y, 0, 8, dt);
@@ -3388,7 +3417,7 @@ function resetGame() {
   player.dashT = 0; player.dashCd = 0;
   player.dmgMul = 1; player.atkMul = 1; player.musouMul = 1; player.rangeMul = 1;
   player.poise = player.maxPoise; player.poiseT = 0; player.poiseRegen = 0;
-  player.airY = 0; player.vy = 0; player.airAtk = false; player.pos.y = 0; G.volleyT = 0; G.reformT = 0;
+  player.airY = 0; player.vy = 0; player.airAtk = false; player.pos.y = 0; G.volleyT = 0; G.reformT = 0; PRESSURE.reset();
   player.leech = 0; player.upgrades.length = 0; pendingUpgrades = []; G.offering = false;
   $('#upgrade').classList.add('hide');
   camYaw = 0; camPitch = 0.20;
@@ -3444,7 +3473,7 @@ function updateDirector(dt) {
   const have = activeCount();
   if (G.spawnT <= 0 && have < want) {
     const gap = want - have;
-    G.spawnT = gap > 12 ? 0.10 : (gap > 4 ? 0.26 : 0.55);
+    G.spawnT = (gap > 12 ? 0.10 : (gap > 4 ? 0.26 : 0.55)) * PRESSURE.spawnMul;
     const n = Math.min(gap > 12 ? 3 : 1, gap);
     for (let i = 0; i < n; i++) {
       const a = rand(0, TAU), r = rand(24, 32);
@@ -3710,6 +3739,7 @@ window.__dbg = {
   execute() { return tryExecute(); },
   light() { tryLight(); },
   damageEnemy(a, b, c, d, e) { damageEnemy(a, b, c, d, e); },
+  pressure: () => ({ v: +PRESSURE.v.toFixed(2), tier: PRESSURE.tier, spawnMul: +PRESSURE.spawnMul.toFixed(2), volleyMul: +PRESSURE.volleyMul.toFixed(2), skillMul: +PRESSURE.skillMul.toFixed(2) }),
   roles() { const r = { front: 0, flank: 0, back: 0, boss: 0 }; for (const s of E) if (s.active && !s.dead && r[s.role] !== undefined) r[s.role]++; return r; },
   volleyWarn: () => ({ level: volleyWarn.level, on: volleyWarn.on, t: +volleyWarn.t.toFixed(2), scale: +volleyWarn.m.scale.x.toFixed(2), x: +volleyWarn.m.position.x.toFixed(1), z: +volleyWarn.m.position.z.toFixed(1) }),
   dash() { tryDash(); },
