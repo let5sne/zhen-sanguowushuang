@@ -1058,6 +1058,75 @@ const fires = [];
   }
 }
 
+/* 二级据点：北岭哨塔（给大地图一个视觉锚点 + 可绕行掩体） */
+{
+  const OX = -66, OZ = 54;
+  const stoneMat = new THREE.MeshStandardMaterial({ color: 0x9d937f, roughness: .95, metalness: .02 });
+  const woodMat  = SURFACES.wood.clone();
+  const darkWood = SURFACES.wood.clone(); darkWood.color.set(0x5a4530);
+  const g = new THREE.Group();
+
+  /* 石砌基座 */
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(4.2, 4.8, 1.6, 10), stoneMat);
+  base.position.y = .8; g.add(base);
+  /* 台阶 */
+  for (let i = 0; i < 3; i++) {
+    const st = new THREE.Mesh(new THREE.BoxGeometry(3.2 - i * .5, .28, .8), stoneMat);
+    st.position.set(0, .14 + i * .28, 4.6 - i * .8); g.add(st);
+  }
+  /* 四根木柱 + 平台 */
+  for (let i = 0; i < 4; i++) {
+    const sx = i < 2 ? -1 : 1, sz = i % 2 ? -1 : 1;
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(.22, .26, 5.2, 6), darkWood);
+    leg.position.set(sx * 2.5, 4.2, sz * 2.5); g.add(leg);
+    const brace = new THREE.Mesh(new THREE.BoxGeometry(.16, 3.0, .16), darkWood);
+    brace.position.set(sx * 2.5, 3.0, sz * 2.5); brace.rotation.z = sx * .5; g.add(brace);
+  }
+  const deck = new THREE.Mesh(new THREE.BoxGeometry(6.2, .3, 6.2), woodMat);
+  deck.position.y = 6.9; g.add(deck);
+  const rail = new THREE.Mesh(new THREE.BoxGeometry(6.2, .9, .16), woodMat);
+  rail.position.set(0, 7.5, 3.0); g.add(rail);
+  const rail2 = rail.clone(); rail2.position.z = -3.0; g.add(rail2);
+  const rail3 = new THREE.Mesh(new THREE.BoxGeometry(.16, .9, 6.2), woodMat);
+  rail3.position.set(3.0, 7.5, 0); g.add(rail3);
+  const rail4 = rail3.clone(); rail4.position.x = -3.0; g.add(rail4);
+  /* 顶盖 */
+  const roof = new THREE.Mesh(new THREE.ConeGeometry(5.4, 2.6, 4), SURFACES.cloth.clone());
+  roof.material.color.set(0x6b5a3e); roof.position.y = 9.4; roof.rotation.y = Math.PI / 4; g.add(roof);
+  /* 梯子 */
+  for (let i = 0; i < 2; i++) {
+    const rl = new THREE.Mesh(new THREE.BoxGeometry(.1, 6.4, .1), woodMat);
+    rl.position.set(-.4 + i * .8, 3.9, 4.4); rl.rotation.x = -.28; g.add(rl);
+  }
+  for (let i = 0; i < 7; i++) {
+    const rung = new THREE.Mesh(new THREE.BoxGeometry(.9, .08, .08), woodMat);
+    rung.position.set(0, 1.4 + i * .8, 4.72 - i * .22); g.add(rung);
+  }
+  /* 两侧旗杆 */
+  for (const sx of [-1, 1]) {
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(.07, .09, 7, 5), darkWood);
+    pole.position.set(sx * 4.4, 3.5, 3.2); g.add(pole);
+    const flag = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 2.2),
+      new THREE.MeshStandardMaterial({ color: 0x7d1a12, roughness: 1, side: THREE.DoubleSide }));
+    flag.position.set(sx * 4.4 + .8, 5.6, 3.2); g.add(flag);
+  }
+  /* 木箱与拒马 */
+  for (let i = 0; i < 3; i++) {
+    const box = new THREE.Mesh(new THREE.BoxGeometry(1.1, 1.1, 1.1), woodMat);
+    box.position.set(-3.2 + i * 1.4, 2.15, -2.2); box.rotation.y = rand(0, 1); g.add(box);
+  }
+  for (let i = 0; i < 5; i++) {
+    const a = -0.9 + i * .45;
+    const pk = new THREE.Mesh(new THREE.BoxGeometry(.14, 1.5, .14), darkWood);
+    pk.position.set(Math.cos(a) * 6.2, .75, Math.sin(a) * 6.2 + 1.0);
+    pk.rotation.set(rand(-.2, .2), 0, rand(-.3, .3)); g.add(pk);
+  }
+
+  g.position.set(OX, 0, OZ); g.rotation.y = 0.4;
+  scene.add(g);
+  addCircleBlocker(OX, OZ, 4.6, 9.5);
+}
+
 /* 战场土路 */
 {
   /* 土路从出生点一直铺到关楼门口（关楼已后移到 GATE_Z） */
