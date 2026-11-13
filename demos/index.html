@@ -187,7 +187,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0a0908;color:#f0e6d
     <b>右键 / K</b><span>蓄力重击（按住）</span>
     <b>Q</b><span>格挡 / 精准弹反</span>
     <b>E</b><span>跳跃（空中 J 下坠斩）</span>
-    <b>空格</b><span>闪避</span>
+    <b>空格</b><span>闪避（闪避中按 J 出闪避斩）</span>
     <b>Shift</b><span>疾跑</span>
     <b>F</b><span>无双乱舞</span>
     <b>Tab</b><span>锁定敌将</span>
@@ -2763,6 +2763,21 @@ function resolvePlayerHit(atk) {
 /* ---------------- 玩家受击 / 无双 ---------------- */
 function damagePlayer(dmg, nx, nz) {
   if (player.invuln > 0 || player.dead || player.state === 'musou') return;
+  /* 完美闪避：闪避前 0.14 s 内被击中 → 无伤 + 子弹时间 + 返还 CD */
+  if (player.dashT > 0.08) {
+    player.musou = clamp(player.musou + 8 * player.musouMul, 0, player.maxMusou);
+    player.invuln = Math.max(player.invuln, 0.30);
+    player.dashCd = 0;
+    G.slow = Math.max(G.slow, 0.40);
+    hitStop = Math.max(hitStop, 0.10);
+    shake(.16, .14);
+    SFX.parry();
+    shockRing(player.pos, 2.8, .30, 0x9fd0ff);
+    burst(_v3.copy(player.pos).setY(1.2), 12, { color: 0x9fd0ff, speed: 6, up: 2, life: .35, size: .3, grav: -8 });
+    popDamage(_v3.copy(player.pos).setY(2.0), '闪避', 'parry');
+    return;
+  }
+
   /* 格挡：0.16s 内按下 = 精准弹反（无伤 + 顿帧 + 震退周围 + 攒槽），之后按住 = 减伤 80% */
   if (player.blocking && player.hurtT <= 0) {
     if (player.blockT <= 0.16) {
@@ -2961,7 +2976,22 @@ function aimAssist(maxDist, step) {
   return true;
 }
 
+/* 闪避派生：闪避中按攻击 = 闪避斩（结束闪避 + 突进斩击） */
+function tryDashAttack() {
+  if (player.dashT <= 0 || player.dead) return false;
+  player.dashT = 0;
+  player.dashCd = Math.max(player.dashCd, 0.18);
+  aimAssist(5.2, 0.6);
+  startAttack(2, 0.36, false);
+  player.atk.power = 1.15;
+  player.vel.x = Math.sin(player.yaw) * 13;
+  player.vel.z = Math.cos(player.yaw) * 13;
+  SFX.swing(true);
+  return true;
+}
+
 function tryLight() {
+  if (tryDashAttack()) return;
   if (G.state !== 'play' || player.dead) return;
   if (player.state === 'attack') { if (player.atkP > 0.2) player.queued = true; return; }
   if (player.state === 'musou' || player.hurtT > 0) return;
@@ -3536,6 +3566,9 @@ window.__dbg = {
   isLowQ() { return LOWQ; },
   jump() { tryJump(); return player.airY; },
   execute() { return tryExecute(); },
+  light() { tryLight(); },
+  dash() { tryDash(); },
+  jumpKey() { tryJump(); },
   airAttack() { return tryAirAttack(); },
   rigPoolSize() { let n = 0; for (const p of rigPool.values()) n += p.length; return n; },
   dismissUpgrade() { if (G.offering && pendingUpgrades[0]) takeUpgrade(pendingUpgrades[0]); return G.offering; },
