@@ -49,7 +49,7 @@ cd demos && python3 -m http.server 8000
 | 色彩链路 | 场景渲染进 `HalfFloatType` RT（`EffectComposer` 默认即 HDR），中间任何 pass 不降到 8-bit；`renderer.toneMapping = NoToneMapping`，**色调映射由最终 pass 独占**（r160 里渲染进 RT 时 `toneMapping` 本来就失效，明确写出来避免误用） |
 | 后期 | 4 个 pass：`RenderPass` → `BattlefieldAtmosphere` → `UnrealBloomPass` → 自写 Grade（ACES + 曝光 1.06 + 对比 1.09 + 饱和 0.94 + 分离色调 0.028 + 暗角 0.07 + **暗部抬升 0.035**） |
 | 大气 | 半分辨率单 pass 完成 SSAO（8 sample + 深度双边模糊）、高度雾（`exp(-h/1.5)` 沿视线积分，系数 .007）、god rays（16 步径向模糊）；复用 `depthTexture`，**无额外 prepass**；合成时雾色混合系数 .26 |
-| 阴影 | 双光源级联：主太阳 2048²（半径 20 m）+ 跟随玩家的近端光 2048²（半径 8 m），`PCFSoftShadowMap` |
+| 阴影 | 双光源级联：主太阳 2048²（半径 20 m）+ 跟随玩家的近端光 2048²（半径 8 m），`PCFSoftShadowMap`；20 m 外由**贴地接触阴影**（`shadowIM`，对全部单位生效）兜底，因此远景单位不会浮空，也无需第三级级联 |
 | 环境光 | 程序化 equirect 1024×512 → `PMREMGenerator`；含太阳盘、天空渐变、地面反弹色，太阳方向与平行光一致 |
 | 材质 | 5 类 PBR：淬钢（metalness .96 / roughness .26 / anisotropy .38）、织物（sheen .65）、干裂黄土（roughness .9）、木漆（clearcoat .22）、皮肤（thickness + 低强度 sheen） |
 | 地面 | 2048² 程序化 albedo + 由高度图生成的 normal + roughness；双尺度 UV 去平铺 |
