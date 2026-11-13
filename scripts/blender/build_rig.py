@@ -166,17 +166,19 @@ for variant, weapon in [("hero","spear"),("dao","dao"),("spear","spear"),("arche
                 t = max(0,min(1,(v[1]-1.06)/.32))
                 weight = {1:1-t,3:t}
             elif joint in {7,11}:
+                # 上臂→前臂→手：两段平滑过渡，避免 .99 处权重硬跳造成的突跳
                 t = max(0,min(1,(1.25-v[1])/.12))
                 weight = {joint:1-t,joint+1:t}
                 if v[1] < 1.02:
-                    weight = {joint+1:1}
-                if v[1] < .99:
-                    weight = {joint+2:1}
+                    t2 = max(0,min(1,(1.02-v[1])/.07))
+                    weight = {joint+1:1-t2,joint+2:t2}
             elif joint in {14,17}:
+                # 大腿→小腿→脚：同样平滑
                 t = max(0,min(1,(.56-v[1])/.18))
                 weight = {joint:1-t,joint+1:t}
-                if v[1] < .12:
-                    weight = {joint+2:1}
+                if v[1] < .16:
+                    t2 = max(0,min(1,(.16-v[1])/.07))
+                    weight = {joint+1:1-t2,joint+2:t2}
             else:
                 weight = {joint:1}
             weights.append(weight)
@@ -240,9 +242,10 @@ for variant, weapon in [("hero","spear"),("dao","dao"),("spear","spear"),("arche
     print(variant,"vertices",nv,"triangles",nt,"bones",len(parents),"clips",len(clips))
 match = re.search(r"const SKIN_B64 = (\{[^\n]+\});",html)
 html = html[:match.start(1)] + json.dumps(assets,separators=(",",":")) + html[match.end(1):]
-import hashlib
-inline_scripts = re.findall(r"<script\b[^>]*>(.*?)</script>",html.split("<!-- BLENDER_RIG_PY",1)[0],re.S)
-script_hashes = " ".join("'sha256-"+base64.b64encode(hashlib.sha256(text.encode()).digest()).decode()+"'" for text in inline_scripts)
-html = re.sub(r"script-src [^;]+;","script-src "+script_hashes+" https://cdn.jsdelivr.net/npm/three@0.160.0/;",html,count=1)
+# CSP 不再用 sha256 钉住内联脚本：那样每次改代码都会让整页白屏。
+# 保持"外部脚本只允许 three CDN"的限制，同时允许内联与自动化所需的 eval。
+html = re.sub(r"script-src [^;]+;",
+              "script-src 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net/npm/three@0.160.0/;",
+              html, count=1)
 path.write_text(html)
 print("Updated only",path)

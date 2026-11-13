@@ -51,7 +51,7 @@ cd demos && python3 -m http.server 8000
 | 大气 | 半分辨率单 pass 完成 SSAO（8 sample + 深度双边模糊）、高度雾（`exp(-h/1.5)` 沿视线积分，系数 .007）、god rays（16 步径向模糊）；复用 `depthTexture`，**无额外 prepass**；合成时雾色混合系数 .26 |
 | 阴影 | 双光源级联：主太阳 2048²（半径 20 m）+ 跟随玩家的近端光 2048²（半径 8 m），`PCFSoftShadowMap`；20 m 外由**贴地接触阴影**（`shadowIM`，对全部单位生效）兜底，因此远景单位不会浮空，也无需第三级级联 |
 | 环境光 | 程序化 equirect 1024×512 → `PMREMGenerator`；含太阳盘、天空渐变、地面反弹色，太阳方向与平行光一致 |
-| 材质 | 5 类 PBR：淬钢（metalness .96 / roughness .26 / anisotropy .38）、织物（sheen .65）、干裂黄土（roughness .9）、木漆（clearcoat .22）、皮肤（thickness + 低强度 sheen） |
+| 材质 | 5 类 PBR：淬钢（metalness .96 / roughness .26 / anisotropy .38）、织物（sheen .65）、干裂黄土（roughness .9）、木漆（clearcoat .22）、皮肤（thickness + 低强度 sheen）；角色 PBR 贴图 1024²（albedo/roughness/normal），甲片与布料的细grain 在片元着色器里解析生成 |
 | 地面 | 2048² 程序化 albedo + 由高度图生成的 normal + roughness；双尺度 UV 去平铺 |
 | 后期降级 | `quality ∈ [0.55, 1.0]`，只降渲染比例 / SSAO 采样 / 体积光开关 / 阴影分辨率 / 尘粒数 |
 
@@ -60,7 +60,7 @@ cd demos && python3 -m http.server 8000
 | 方面 | 做法 |
 |---|---|
 | 建模 | Blender 5.3 生成 5 套 skinned 角色：赵云 2412 面、刀兵 2148、枪兵 2108、弓兵 2780、敌将 3492；每套 **21 根骨**、**10 个 clip**（idle/walk/run/atk1-3/heavy/hit/die/musou） |
-| 蒙皮 | 每顶点 ≤ 2 根权重影响（上限 4），权重归一化误差 ~3e-8 |
+| 蒙皮 | 每顶点 ≤ 2 根权重影响（格式支持 4 槽），肘/膝用**平滑过渡**而非硬切换（消除突跳），权重归一化误差 ~3e-8；实测英雄模型 1353 顶点中 401 个为双权重 |
 | 单网格 | 每个角色所有部件合并为**一个 `SkinnedMesh` / 一个材质**，靠顶点色 + 贴图区分——这是 60 人同屏 draw call 不爆的关键 |
 | 动画 | `AnimationMixer` + `crossFadeTo`；**按距离分档更新**：≤18 m 60 Hz、18–35 m 20 Hz、35–60 m 10 Hz、>60 m 冻结姿态 |
 | 静态合批 | 静态道具按材质合并成 `static-AO-batch`，降低 draw call |
@@ -76,7 +76,9 @@ cd demos && python3 -m http.server 8000
 
 ### 音频
 
-WebAudio 全程合成：挥空、命中、交击、重击、战鼓（lookahead 调度）、铜锣、无双、弓弦、脚步；总线过 `DynamicsCompressor`。本次升级未改动音频。
+WebAudio 全程合成：挥空、命中、交击、重击、铜锣、无双、弓弦、脚步；总线过 `DynamicsCompressor`。
+
+配乐是**三层自适应**：战鼓（始终，增益随强度 0.78–1.12）→ 低音持续（强度 > .3 每小节一记）→ 高频反拍碎点（强度 > .65）。强度由连击数驱动（`combo/40`），同时把 bpm 从 88 推到 114，用 0.4 s lookahead 调度避免抖动。
 
 ## 目录
 
