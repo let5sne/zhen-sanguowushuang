@@ -1679,7 +1679,7 @@ function updateEnemyRigs(dt) {
     r.timeOverride=null;
     if(name==='atk1'){
       const clip=r.actions.atk1.getClip(),impact=clip.userData.hit,followThrough=clip.duration*.68;
-      const wind=TYPES[s.type].wind*(s.officer?.8:1);
+      const wind=TYPES[s.type].wind;
       r.timeOverride=s.state==='wind'?impact*clamp(s.t/wind,0,1):s.state==='strike'?
         lerp(impact,followThrough,clamp(s.t/TYPES[s.type].strike,0,1)):
         lerp(followThrough,clip.duration,clamp(s.t/TYPES[s.type].rec,0,1));
@@ -1761,7 +1761,9 @@ for (let i = 0; i < MAXE + 4; i++) shadowIM.setMatrixAt(i, ZERO_M);
 const TYPES = {
   dao: { hp: 30, spd: 3.05, dmg: 3.4, range: 2.35, wind: .40, strike: .13, rec: .38, scale: 1.00, tint: 0x8a5a3a, reach: 2.5, score: 1 },
   spear: { hp: 40, spd: 2.55, dmg: 4.8, range: 3.15, wind: .50, strike: .15, rec: .46, scale: 1.03, tint: 0x44618f, reach: 3.4, score: 1 },
-  archer: { hp: 22, spd: 2.45, dmg: 2.4, range: 17, wind: .70, strike: .10, rec: .70, scale: 0.98, tint: 0x6f7038, reach: 0, score: 1 }
+  archer: { hp: 22, spd: 2.45, dmg: 2.4, range: 17, wind: .70, strike: .10, rec: .70, scale: 0.98, tint: 0x6f7038, reach: 0, score: 1 },
+  /* 敌将：独立类型，自带大开大合的前后摇（比枪兵更慢更重） */
+  officer: { hp: 620, spd: 3.4, dmg: 16, range: 3.6, wind: .62, strike: .20, rec: .58, scale: 1.30, tint: 0xd8b25a, reach: 5.6, score: 10 }
 };
 const E = [];
 for (let i = 0; i < MAXE; i++) E.push({
@@ -1817,6 +1819,9 @@ function damageEnemy(s, dmg, dirX, dirZ, heavy) {
   shake(heavy ? 0.26 : 0.10, heavy ? 0.20 : 0.10);
   s.pos.x += dirX * (heavy ? 0.55 : 0.18);
   s.pos.z += dirZ * (heavy ? 0.55 : 0.18);
+  /* 方向性硬直：正 = 前倾（从背后被打），负 = 后仰（正面被打） */
+  const facingDot = dirX * Math.sin(s.yaw) + dirZ * Math.cos(s.yaw);
+  s.hitLean = (facingDot > 0 ? 1 : -1) * (heavy ? 0.30 : 0.18);
   /* 先结算仪表，再判定死亡：击破也要攒槽 */
   if (player.state !== 'musou') player.musou = clamp(player.musou + (heavy ? 2.6 : 1.1), 0, player.maxMusou);
   player.combo++; player.comboT = 2.6;
@@ -1852,16 +1857,16 @@ function updateEnemies(dt) {
 
     /* 攻击状态机 */
     if (s.state === 'wind') {
-      s.atkP = clamp(s.t / (TYPES[s.type].wind * (s.officer ? .8 : 1)), 0, 1);
+      s.atkP = clamp(s.t / TYPES[s.type].wind, 0, 1);
       s.yaw = angTo(s.yaw, Math.atan2(nx, nz), dt * 6);
       if (s.atkP >= 1) {
         s.state = 'strike'; s.t = 0;
         if (s.type === 'archer') shootArrow(s, nx, nz);
         else {
           SFX.swing(false);
-          const reach = s.reach * (s.officer ? 1.35 : 1);
+          const reach = s.reach;
           if (dist < reach + 0.55 && Math.abs(angDiff(Math.atan2(nx, nz), s.yaw)) < 1.15) {
-            damagePlayer(s.dmg * (s.officer ? 1.7 : 1), nx, nz);
+            damagePlayer(s.dmg, nx, nz);
           }
         }
       }
@@ -1937,6 +1942,9 @@ function updateEnemies(dt) {
     const lim = GROUND_R - 6;
     if (r > lim) { s.pos.x *= lim / r; s.pos.z *= lim / r; }
     s.pos.y = damp(s.pos.y, 0, 8, dt);
+    /* 受击倾角回落；死亡倒地由 dead 分支单独处理 */
+    s.hitLean = damp(s.hitLean || 0, 0, 5, dt);
+    s.tilt = damp(s.tilt, s.hitLean || 0, 10, dt);
   }
 }
 
@@ -2133,12 +2141,30 @@ function updatePlayer(dt) {
   }
   if (player.state === 'musou') {
     player.musouT -= dt;
+    /* 持续伤害：180ms 一跳，走游戏时钟（hitStop / G.slow 会同步变慢） */
+    player.musouTick = (player.musouTick || 0) + dt;
+    while (player.musouTick >= 0.18) {
+      player.musouTick -= 0.18;
+      for (const s of E) {
+        if (!s.active || s.dead) continue;
+        const mdx = s.pos.x - player.pos.x, mdz = s.pos.z - player.pos.z;
+        if (mdx * mdx + mdz * mdz < 25) {
+          const md = Math.hypot(mdx, mdz) || 1;
+          damageEnemy(s, 26, mdx / md, mdz / md, true);
+        }
+      }
+      burst(_v3.copy(player.pos).setY(1.2), 10, { color: 0x9fd8ff, speed: 9, up: 2, life: .45, size: .5, grav: -4 });
+    }
     if (Math.random() < dt * 40) {
       const a = rand(0, TAU), r = rand(1, 4.4);
       burst(_v3.set(player.pos.x + Math.cos(a) * r, rand(.2, 2), player.pos.z + Math.sin(a) * r), 3,
         { color: 0x9fd8ff, speed: 3, up: 3, life: .5, size: .55, grav: -2 });
     }
     if (player.musouT <= 0) { player.state = 'idle'; }
+  }
+  if (player.flashT > 0) {
+    player.flashT -= dt;
+    if (player.flashT <= 0) $('#mflash').classList.remove('on');
   }
 
   /* ---- 模型动画 ---- */
@@ -2222,7 +2248,7 @@ function resolvePlayerHit(atk) {
     const nx = dx / (d || 1), nz = dz / (d || 1);
     damageEnemy(s, dmg * rand(.92, 1.08), nx, nz, heavy || stage === 2);
     hits++;
-    if (hits > 14) break;
+    if (hits > 28) break;   /* 一次挥击最多结算 28 个目标（伤害数字有池，DOM 无压力） */
   }
   if (hits > 0) {
     if (heavy) { shockRing(player.pos, 5.5, .45, 0xffe0a0); shake(.4, .3); SFX.thud(); }
@@ -2261,20 +2287,8 @@ function activateMusou() {
   $('#mflash').classList.add('on');
   callout('无双乱舞', '一骑当千');
   shockRing(player.pos, 12, .8, 0x9fd8ff);
-  setTimeout(() => $('#mflash').classList.remove('on'), 4200);
-  /* 持续伤害 */
-  const iv = setInterval(() => {
-    if (player.state !== 'musou') { clearInterval(iv); return; }
-    for (const s of E) {
-      if (!s.active || s.dead) continue;
-      const dx = s.pos.x - player.pos.x, dz = s.pos.z - player.pos.z;
-      if (dx * dx + dz * dz < 25) {
-        const d = Math.hypot(dx, dz) || 1;
-        damageEnemy(s, 26, dx / d, dz / d, true);
-      }
-    }
-    burst(_v3.copy(player.pos).setY(1.2), 10, { color: 0x9fd8ff, speed: 9, up: 2, life: .45, size: .5, grav: -4 });
-  }, 180);
+  player.flashT = 4.2;   /* 闪光时长跟随游戏时间，不用 wall-clock */
+  player.musouTick = 0;  /* 持续伤害改用 tick 累积，受 hitStop / slow 影响 */
 }
 
 /* ---------------- 箭矢 ---------------- */
@@ -2532,12 +2546,13 @@ function activeCount() { let n = 0; for (const s of E) if (s.active && !s.dead) 
 
 function spawnOfficer(name, hp, scale, tint) {
   const a = rand(0, TAU), r = 16;
-  const s = spawnEnemy('spear', Math.cos(a) * r, Math.sin(a) * r, {
+  const s = spawnEnemy('officer', Math.cos(a) * r, Math.sin(a) * r, {
     officer: true, name, hpMul: 1, scale, tint
   });
   if (!s) return;
   s.maxhp = s.hp = hp;
-  s.spd = 3.4; s.dmg = 16; s.range = 3.6; s.reach = 4.2;
+  s.spd = TYPES.officer.spd; s.dmg = TYPES.officer.dmg;
+  s.range = TYPES.officer.range; s.reach = TYPES.officer.reach;
   G.boss = s;
   SFX.officer();
   callout(name, '敌 将 出 阵');
@@ -2849,8 +2864,6 @@ requestAnimationFrame(loop);
 window.__ready = true;
 </script>
 <!-- BLENDER_RIG_PY
-# Blender entry point: extract this comment and pass its text to blender --background --factory-startup --python-expr.
-# It updates only demos/index.html. Original build_geometry.py GEO_B64 remains backward-readable.
 import base64
 import json
 import math
@@ -3037,7 +3050,6 @@ script_hashes = " ".join("'sha256-"+base64.b64encode(hashlib.sha256(text.encode(
 html = re.sub(r"script-src [^;]+;","script-src "+script_hashes+" https://cdn.jsdelivr.net/npm/three@0.160.0/;",html,count=1)
 path.write_text(html)
 print("Updated only",path)
-
 END_BLENDER_RIG -->
 <!-- PHOTO_VERIFY_PY
 # ---------------------------------------------------------------------------
