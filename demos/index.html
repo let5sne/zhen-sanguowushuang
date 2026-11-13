@@ -43,6 +43,12 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0a0908;color:#f0e6d
   position:relative;overflow:hidden;box-shadow:0 2px 14px rgba(0,0,0,.6)}
 #boss .bar i{position:absolute;inset:0;width:100%;transform-origin:left;
   background:linear-gradient(90deg,#8e1f16,#d8452f 60%,#f0a05a);transition:transform .18s}
+#boss #poiseBar{position:relative;height:4px;margin-top:5px;background:rgba(0,0,0,.5);
+  border:1px solid rgba(159,208,255,.28);overflow:hidden}
+#boss #poiseBar i{position:absolute;inset:0;transform-origin:left;transform:scaleX(0);
+  background:linear-gradient(90deg,#2f6f9f,#9fd0ff);transition:transform .12s}
+#boss #poiseBar span{position:absolute;right:2px;top:-1px;font-size:9px;letter-spacing:2px;color:#9fd0ff;opacity:.75}
+#boss.ready #poiseBar{border-color:rgba(159,208,255,.9);box-shadow:0 0 10px rgba(159,208,255,.5)}
 #boss .bar u{position:absolute;inset:0;width:100%;transform-origin:left;
   background:rgba(255,240,210,.35);transition:transform .7s .15s}
 
@@ -156,7 +162,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0a0908;color:#f0e6d
     <div id="ko">击破 <b id="koN">0</b></div>
   </div>
   <div id="timer">00:00</div>
-  <div id="boss"><div class="nm"></div><div class="bar"><i></i><u></u></div></div>
+  <div id="boss"><div class="nm"></div><div class="bar"><i></i><u></u></div><div id="poiseBar"><i></i><span>架势</span></div></div>
   <div id="pl">
     <div class="row">
       <div id="face"><canvas width="104" height="104"></canvas></div>
@@ -180,6 +186,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0a0908;color:#f0e6d
     <b>左键 / J</b><span>三段连斩</span>
     <b>右键 / K</b><span>蓄力重击（按住）</span>
     <b>Q</b><span>格挡 / 精准弹反</span>
+    <b>E</b><span>跳跃（空中 J 下坠斩）</span>
     <b>空格</b><span>闪避</span>
     <b>Shift</b><span>疾跑</span>
     <b>F</b><span>无双乱舞</span>
@@ -1487,6 +1494,10 @@ const SFX = (() => {
     tone(150, .12, 'square', .14, .7);
   };
 
+  /* 跳跃 / 落地 */
+  api.jump = () => { if (ctx) { noiseHit(.12, 380, 1500, .9, .16); tone(220, .10, 'sine', .08, 1.6); } };
+  api.land = () => { if (ctx) { noiseHit(.14, 260, 90, .8, .26, 'lowpass'); tone(90, .10, 'sine', .12, .6); } };
+
   api.startMusic = () => {
     if (!ctx || timer) return;
     nextT = ctx.currentTime + .1;
@@ -2051,6 +2062,11 @@ function damageEnemy(s, dmg, dirX, dirZ, heavy) {
   s.pos.x += dirX * (heavy ? 0.55 : 0.18);
   s.pos.z += dirZ * (heavy ? 0.55 : 0.18);
   /* 方向性硬直：正 = 前倾（从背后被打），负 = 后仰（正面被打） */
+  /* 敌将架势：命中积攒，满 100 可处刑 */
+  if (s.officer) {
+    s.poise = Math.min(100, (s.poise || 0) + (heavy ? 15 : 6));
+    s.poiseT = 3.0;
+  }
   const facingDot = dirX * Math.sin(s.yaw) + dirZ * Math.cos(s.yaw);
   s.hitLean = (facingDot > 0 ? 1 : -1) * (heavy ? 0.30 : 0.18);
   /* 先结算仪表，再判定死亡：击破也要攒槽 */
@@ -2106,6 +2122,60 @@ function updateEnemies(dt) {
     s.t += dt;
     const ox = s.pos.x, oz = s.pos.z;
 
+    /* 敌将技能：独立状态，带明显前摇 */
+    if (s.state === 'skill') {
+      const wind = 0.85, active = s.skillKind === 'charge' ? 0.45 : 0.18, rec = 0.75;
+      if (s.t < wind) {
+        s.atkP = s.t / wind;
+        s.yaw = angTo(s.yaw, Math.atan2(nx, nz), dt * 3);
+      } else if (s.t < wind + active) {
+        if (!s.skillDone) {
+          s.skillDone = true;
+          if (s.skillKind === 'sweep') {
+            SFX.swing(true); shake(.4, .3);
+            shockRing(s.pos, 6.4, .42, 0xffb060);
+            for (const o of E) {
+              if (o === s || !o.active || o.dead) continue;
+              const sdx = o.pos.x - s.pos.x, sdz = o.pos.z - s.pos.z, sd = Math.hypot(sdx, sdz);
+              if (sd < 5.6 && Math.abs(angDiff(Math.atan2(sdx, sdz), s.yaw)) < 1.9) {
+                const k = (5.6 - sd) / 5.6 * 5;
+                o.pos.x += (sdx / (sd || 1)) * k; o.pos.z += (sdz / (sd || 1)) * k;
+                if (o.state !== 'stagger') { o.state = 'stagger'; o.t = 0; }
+              }
+            }
+            const pd = Math.hypot(player.pos.x - s.pos.x, player.pos.z - s.pos.z);
+            if (pd < 6.0 && Math.abs(angDiff(Math.atan2(player.pos.x - s.pos.x, player.pos.z - s.pos.z), s.yaw)) < 1.9) {
+              damagePlayer(22, (player.pos.x - s.pos.x) / (pd || 1), (player.pos.z - s.pos.z) / (pd || 1));
+            }
+          } else {
+            SFX.dash(); SFX.thud();
+            shockRing(s.pos, 5.2, .5, 0xffa050);
+            shake(.5, .35);
+            const pd2 = Math.hypot(player.pos.x - s.pos.x, player.pos.z - s.pos.z);
+            if (pd2 < 5.2) damagePlayer(26, (player.pos.x - s.pos.x) / (pd2 || 1), (player.pos.z - s.pos.z) / (pd2 || 1));
+          }
+        }
+        if (s.skillKind === 'charge') {
+          /* 冲锋：朝当前朝向快速突进 */
+          const cs = 15 * dt;
+          s.pos.x += Math.sin(s.yaw) * cs;
+          s.pos.z += Math.cos(s.yaw) * cs;
+          if (Math.random() < .5) burst(_v3.copy(s.pos).setY(.2), 2, { color: 0xbfae8e, speed: 2, up: 1, life: .4, size: .5, grav: -2 });
+        }
+      } else if (s.t >= wind + active + rec) {
+        s.state = 'chase'; s.t = 0; s.atkP = 0; s.skillDone = false;
+        s.skillCd = rand(6, 9);
+      }
+      s.cool = Math.max(s.cool, 0.4);
+      s.pos.y = damp(s.pos.y, 0, 8, dt);
+      continue;
+    }
+    if (s.officer && s.skillCd > 0) s.skillCd -= dt;
+    if (s.officer && (s.poise || 0) > 0) {
+      if ((s.poiseT || 0) > 0) s.poiseT -= dt;
+      else s.poise = Math.max(0, s.poise - 9 * dt);
+    }
+
     /* 攻击状态机 */
     if (s.state === 'wind') {
       s.atkP = clamp(s.t / TYPES[s.type].wind, 0, 1);
@@ -2145,6 +2215,13 @@ function updateEnemies(dt) {
         }
       } else {
         if (dist > s.range * .82) { mvx = nx; mvz = nz; }
+        else if (s.officer && s.skillCd <= 0 && dist < 7.5 && s.state === 'chase') {
+          s.state = 'skill'; s.t = 0; s.atkP = 0; s.skillDone = false;
+          s.cool = 1.2;
+          callout(s.name, s.skillKind === 'charge' ? '突 击' : '横 扫');
+          SFX.gong();
+          continue;
+        }
         else {
           s.strafeT -= dt;
           if (s.strafeT <= 0) { s.strafeT = rand(.6, 1.6); s.strafe *= -1; }
@@ -2252,7 +2329,7 @@ const player = {
   blocking: false, blockT: 0, blocking0: false, charging: false, chargeT: 0, stepT: 0, walkP: 0, moving: false,
   /* 霸体：蓄力/重击后可硬吃 N 次攻击，不进硬直不断连击 */
   poise: 2, maxPoise: 2, poiseT: 0,
-  atk: null, lock: null, airY: 0,
+  atk: null, lock: null, airY: 0, vy: 0, airAtk: false, jumps: 0,
   /* 局内成长（每 25 击破三选一） */
   dmgMul: 1, atkMul: 1, musouMul: 1, rangeMul: 1, leech: 0, upgrades: []
 };
@@ -2467,6 +2544,36 @@ function updatePlayer(dt) {
     }
     if (player.musouT <= 0) { player.state = 'idle'; }
   }
+  /* 跳跃物理：重力 24 m/s²，起跳 7.6 m/s（滞空约 0.63 s） */
+  if (player.airY > 0 || player.vy > 0) {
+    player.vy -= 24 * dt;
+    player.airY += player.vy * dt;
+    if (player.airY <= 0) {
+      player.airY = 0; player.vy = 0;
+      if (player.airAtk) {
+        player.airAtk = false;
+        shockRing(player.pos, 4.6, .42, 0xffe0a0);
+        shake(.34, .22);
+        hitStop = Math.max(hitStop, .04);
+        SFX.thud();
+        for (const s of E) {
+          if (!s.active || s.dead) continue;
+          const ldx = s.pos.x - player.pos.x, ldz = s.pos.z - player.pos.z;
+          const ld = Math.hypot(ldx, ldz);
+          if (ld < 3.9) damageEnemy(s, 46 * player.dmgMul, ldx / (ld || 1), ldz / (ld || 1), true);
+        }
+        burst(_v3.copy(player.pos).setY(.18), 18, { color: 0xd8c8a8, speed: 6, up: 2.4, life: .5, size: .6, grav: -6, drag: 2.4 });
+      } else {
+        burst(_v3.copy(player.pos).setY(.1), 8, { color: 0xbfae8e, speed: 3, up: 1.2, life: .4, size: .5, grav: -2, drag: 3 });
+      }
+      SFX.land();
+      if (player.state === 'jump' || (player.state === 'attack' && player.airAtk === false)) {
+        player.state = 'idle'; player.atk = null;
+      }
+    }
+    player.pos.y = Math.max(0, player.airY);
+  } else player.pos.y = 0;
+
   if (player.poiseT > 0) player.poiseT -= dt;
   else if (player.poise < player.maxPoise && !player.charging) {
     player.poiseRegen = (player.poiseRegen || 0) + dt;
@@ -2492,6 +2599,10 @@ function updatePlayer(dt) {
   } else if (player.state === 'musou') {
     armRx = -0.15 + Math.sin(performance.now() * 0.03) * .2;
     armRz = 1.35; twist = 0; lean = 0.05; hipY = -0.05;
+  } else if (player.airY > 0.02) {
+    const tuck = clamp(player.vy * .06, -.35, .35);
+    legL = -0.55 + tuck; legR = 0.35 - tuck; armLx = -0.7; armRx = -1.0 + tuck;
+    lean = 0.12; armRz = 0.5; hipY = 0.05;
   } else if (player.blocking) {
     armRx = -1.15; armRz = -0.55; armLx = -1.0; twist = 0.18; lean = 0.06; hipY = -0.06;
   } else if (player.hurtT > 0) {
@@ -2796,6 +2907,52 @@ function tryDash() {
   SFX.dash();
   burst(_v3.copy(player.pos).setY(.2), 8, { color: 0xbfae8e, speed: 3, up: 1.2, life: .5, size: .6, grav: -2, drag: 3 });
 }
+function tryJump() {
+  if (G.state !== 'play' || player.dead) return;
+  if (player.airY > 0.001 || player.vy > 0) return;
+  if (player.state === 'attack' || player.state === 'musou' || player.hurtT > 0) return;
+  player.vy = 7.6; player.airY = 0.001; player.airAtk = false;
+  player.state = 'jump'; player.t = 0;
+  player.jumps++;
+  SFX.jump();
+  burst(_v3.copy(player.pos).setY(.12), 8, { color: 0xbfae8e, speed: 3, up: 1.4, life: .45, size: .55, grav: -2, drag: 3 });
+}
+
+function tryAirAttack() {
+  if (player.airY <= 0.001 || player.airAtk) return false;
+  player.airAtk = true;
+  player.vy = Math.min(player.vy, -6);      /* 快速下坠 */
+  player.state = 'attack'; player.t = 0;
+  player.atkStage = 2; player.atkDur = 0.34; player.atkP = 0; player.atkDone = false;
+  player.atk = { heavy: true, stage: 2, power: 1.15 };
+  SFX.swing(true);
+  return true;
+}
+
+function tryExecute() {
+  const b = G.boss;
+  if (G.state !== 'play' || player.dead || !b || !b.active || b.dead) return false;
+  if ((b.poise || 0) < 100) return false;
+  const dx = b.pos.x - player.pos.x, dz = b.pos.z - player.pos.z;
+  const d = Math.hypot(dx, dz);
+  if (d > 5.0) return false;
+  b.poise = 0; b.poiseT = 0;
+  player.yaw = Math.atan2(dx, dz);
+  G.slow = Math.max(G.slow, 1.1);
+  player.hp = Math.min(player.maxhp, player.hp + 32);
+  player.musou = clamp(player.musou + 18 * player.musouMul, 0, player.maxMusou);
+  player.invuln = Math.max(player.invuln, 1.0);
+  hitStop = Math.max(hitStop, 0.16);
+  shake(.55, .5);
+  SFX.parry(); SFX.gong();
+  shockRing(b.pos, 7.5, .7, 0x9fd0ff);
+  burst(_v3.copy(b.pos).setY(1.5), 26, { color: 0x9fd0ff, speed: 9, up: 4, life: .7, size: .55, grav: -6 });
+  popDamage(_v3.copy(b.pos).setY(2.4), '处刑', 'parry');
+  callout('处 刑', b.name);
+  damageEnemy(b, Math.max(420, b.maxhp * 0.34), dx / (d || 1), dz / (d || 1), true);
+  return true;
+}
+
 function lockPointer() {
   try { const p = canvas.requestPointerLock(); if (p && p.catch) p.catch(() => {}); } catch (e) { /* 忽略 */ }
 }
@@ -2813,11 +2970,13 @@ addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
   keys[k] = true;
   if (k === ' ') { e.preventDefault(); tryDash(); }
-  if (k === 'j') tryLight();
+  if (k === 'j') { if (!tryAirAttack()) tryLight(); }
   if (k === 'k') { if (!e.repeat) { player.charging = true; player.chargeT = 0; } }
   if (k === 'f') activateMusou();
   if (k === 'tab') { e.preventDefault(); tryLock(); }
   if (k === 'q' && !e.repeat && !player.blocking) { player.blocking = true; player.blockT = 0; }
+  if (k === 'e' && !e.repeat) { tryJump(); return; }
+  if (k === 'r' && !e.repeat) { if (tryExecute()) return; }
   if (G.offering && (k === '1' || k === '2' || k === '3')) {
     takeUpgrade(pendingUpgrades[+k - 1]); return;
   }
@@ -2859,7 +3018,7 @@ const UI = {
   ko: $('#koN'), timer: $('#timer'), hpF: $('#hpF'), hpB: $('#hpB'),
   musou: $('#musou'), musouF: $('#musouF'), combo: $('#combo'), comboN: $('#comboN'),
   rank: $('#rank'), boss: $('#boss'), bossName: $('#boss .nm'), bossF: $('#boss .bar i'), bossB: $('#boss .bar u'),
-  hud: $('#hud'), call: $('#call'), callBig: $('#call .big'), callSub: $('#call .sub'), poise: $('#poise'),
+  hud: $('#hud'), poiseF: $('#poiseBar i'), call: $('#call'), callBig: $('#call .big'), callSub: $('#call .sub'), poise: $('#poise'),
   mflash: $('#mflash')
 };
 let hpShown = 100, bossShown = 1, callT = 0;
@@ -2898,6 +3057,8 @@ function updateHUD(dt) {
   } else UI.combo.classList.remove('on');
 
   if (G.boss && G.boss.active && !G.boss.dead) {
+    UI.boss.classList.toggle('ready', (G.boss.poise || 0) >= 100);
+    UI.poiseF.style.transform = `scaleX(${(G.boss.poise || 0) / 100})`;
     UI.boss.classList.add('on');
     UI.bossName.textContent = G.boss.name;
     const k = clamp(G.boss.hp / G.boss.maxhp, 0, 1);
@@ -2974,6 +3135,7 @@ function resetGame() {
   player.dashT = 0; player.dashCd = 0;
   player.dmgMul = 1; player.atkMul = 1; player.musouMul = 1; player.rangeMul = 1;
   player.poise = player.maxPoise; player.poiseT = 0; player.poiseRegen = 0;
+  player.airY = 0; player.vy = 0; player.airAtk = false; player.pos.y = 0;
   player.leech = 0; player.upgrades.length = 0; pendingUpgrades = []; G.offering = false;
   $('#upgrade').classList.add('hide');
   camYaw = 0; camPitch = 0.20;
@@ -3009,6 +3171,9 @@ function spawnOfficer(name, hp, scale, tint) {
   s.maxhp = s.hp = hp;
   s.spd = TYPES.officer.spd; s.dmg = TYPES.officer.dmg;
   s.range = TYPES.officer.range; s.reach = TYPES.officer.reach;
+  /* 敌将专属技能：华雄横扫 / 吕布冲锋 */
+  s.skillKind = name === '吕布' ? 'charge' : 'sweep';
+  s.skillCd = rand(3.5, 5.5);
   G.boss = s;
   SFX.officer();
   callout(name, '敌 将 出 阵');
@@ -3288,6 +3453,9 @@ window.__dbg = {
   step(dt = 1 / 60, n = 1) { for (let i = 0; i < n; i++) { tick(dt); } prepareRender();return G.time; },
   setCam(yaw, pitch) { if (yaw !== undefined) camYaw = yaw; if (pitch !== undefined) camPitch = pitch; },
   isLowQ() { return LOWQ; },
+  jump() { tryJump(); return player.airY; },
+  execute() { return tryExecute(); },
+  airAttack() { return tryAirAttack(); },
   rigPoolSize() { let n = 0; for (const p of rigPool.values()) n += p.length; return n; },
   dismissUpgrade() { if (G.offering && pendingUpgrades[0]) takeUpgrade(pendingUpgrades[0]); return G.offering; },
   setDist(v) { camDist = v; },
