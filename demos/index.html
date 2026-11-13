@@ -247,6 +247,20 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 const MAXANISO = renderer.capabilities.getMaxAnisotropy();
 
+/* 低配预设：?low=1 强制开启，?low=0 强制关闭；否则按 GPU 字符串判断 */
+const LOWQ = (() => {
+  const q = new URLSearchParams(location.search).get('low');
+  if (q === '1') return true;
+  if (q === '0') return false;
+  try {
+    const gl = renderer.getContext();
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    const name = ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : '';
+    return /intel|iris|uhd|hd graphics|adreno|mali|powervr|apple a[0-9]/i.test(name);
+  } catch (e) { return false; }
+})();
+const Q_MIN = LOWQ ? 0.45 : 0.55;
+
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x8a7862, 0.0085);
 
@@ -3056,7 +3070,7 @@ $('#result').addEventListener('click', () => { $('#result').classList.add('hide'
 /* ============================================================
    12. 主循环
    ============================================================ */
-let lastT = performance.now(), frames = 0, ftAvg = 16, quality = 1;
+let lastT = performance.now(), frames = 0, ftAvg = 16, quality = LOWQ ? 0.7 : 1;
 let running = false;
 
 function tick(dt) {
@@ -3125,9 +3139,9 @@ function loop(now) {
     /* 掉帧越狠反应越快：26ms 以上只等 20 帧就降，避免长时间低帧 */
     const qWin = ftAvg > 26 ? 20 : 45;
     if (frames >= qWin) {
-      if (ftAvg > 17.1 && quality > 0.55) {
+      if (ftAvg > 17.1 && quality > Q_MIN) {
         const step = ftAvg > 30 ? 0.18 : ftAvg > 22 ? 0.12 : 0.07;
-        quality = Math.max(0.55, quality - step);
+        quality = Math.max(Q_MIN, quality - step);
         applyQuality(); frames = 0; ftAvg = 16.7;
       } else if (ftAvg < 14 && quality < 1) {
         quality = Math.min(1, quality + 0.05); applyQuality(); frames = 0;
@@ -3147,10 +3161,15 @@ function applyQuality() {
   const pr = Math.min(window.devicePixelRatio || 1, 1.5) * quality;
   renderer.setPixelRatio(pr); composer.setPixelRatio(pr);
   renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight);
-  atmosphere.samples=quality<.7?4:8;
-  atmosphere.volumetrics=quality>=.7;
-  dustGeo.setDrawRange(0,Math.floor(DUST_N*quality));
-  const nearRes=quality<.7?1024:2048;
+  atmosphere.samples = LOWQ ? 4 : (quality < .7 ? 4 : 8);
+  atmosphere.volumetrics = !LOWQ && quality >= .7;
+  dustGeo.setDrawRange(0, Math.floor(DUST_N * quality * (LOWQ ? .5 : 1)));
+  const nearRes = LOWQ ? 1024 : (quality < .7 ? 1024 : 2048);
+  const sunRes = LOWQ ? 1024 : 2048;
+  if (sun.shadow.mapSize.x !== sunRes) {
+    sun.shadow.mapSize.set(sunRes, sunRes);
+    if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
+  }
   if(nearSun.shadow.mapSize.x!==nearRes){nearSun.shadow.mapSize.set(nearRes,nearRes);if(nearSun.shadow.map){nearSun.shadow.map.dispose();nearSun.shadow.map=null;}}
 }
 
@@ -3234,6 +3253,7 @@ window.__dbg = {
   hurt(n = 10) { damagePlayer(n, 0, 1); },
   step(dt = 1 / 60, n = 1) { for (let i = 0; i < n; i++) { tick(dt); } prepareRender();return G.time; },
   setCam(yaw, pitch) { if (yaw !== undefined) camYaw = yaw; if (pitch !== undefined) camPitch = pitch; },
+  isLowQ() { return LOWQ; },
   rigPoolSize() { let n = 0; for (const p of rigPool.values()) n += p.length; return n; },
   dismissUpgrade() { if (G.offering && pendingUpgrades[0]) takeUpgrade(pendingUpgrades[0]); return G.offering; },
   setDist(v) { camDist = v; },
