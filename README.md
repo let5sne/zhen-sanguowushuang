@@ -1,5 +1,11 @@
 # 无双 · 虎牢关
 
+**在线试玩：<https://let5sne.github.io/zhen-sanguowushuang/>**（无需安装，桌面端 Chrome / Safari / Edge）
+
+> 发布新版本：`scripts/publish_pages.sh`（把 `demos/index.html` 推到 `gh-pages` 分支根目录）
+
+
+
 用「一句话 → 可玩游戏」的方式做出来的浏览器割草动作游戏。单文件 HTML，零外部资源——模型、贴图、音效、UI 全部由代码生成。
 
 渲染层在 2026-11 做了一次「实时照片级」升级：HDR 光照链、双级联阴影、程序化 PBR、骨骼动画角色。
