@@ -1974,8 +1974,27 @@ function damageEnemy(s, dmg, dirX, dirZ, heavy) {
 let attackTokens = 0;
 const MAX_TOKENS = 2;
 
+const CELL = 1.5, INV_CELL = 1 / CELL, GRID_N = 100, GRID_OFF = 50;
+const gridHead = new Int32Array(GRID_N * GRID_N);
+const gridNext = new Int32Array(MAXE);
+function gridCell(v) {
+  const c = (v * INV_CELL) | 0;
+  return c < -GRID_OFF ? 0 : c >= GRID_OFF ? GRID_N - 1 : c + GRID_OFF;
+}
+function rebuildGrid() {
+  gridHead.fill(-1);
+  for (let i = 0; i < MAXE; i++) {
+    const s = E[i];
+    if (!s.active || s.dead) continue;
+    const k = gridCell(s.pos.z) * GRID_N + gridCell(s.pos.x);
+    gridNext[i] = gridHead[k];
+    gridHead[k] = i;
+  }
+}
+
 function updateEnemies(dt) {
   const px = player.pos.x, pz = player.pos.z;
+  rebuildGrid();
   for (let i = 0; i < MAXE; i++) {
     const s = E[i];
     if (!s.active) continue;
@@ -2059,19 +2078,7 @@ function updateEnemies(dt) {
       s.yaw = angTo(s.yaw, Math.atan2(nx, nz), dt * 7);
     }
 
-    /* 分离力 */
-    for (let j = i + 1; j < MAXE; j++) {
-      const o = E[j];
-      if (!o.active || o.dead) continue;
-      const ddx = o.pos.x - s.pos.x, ddz = o.pos.z - s.pos.z;
-      const d2 = ddx * ddx + ddz * ddz;
-      const minD = (s.scale + o.scale) * 0.52;
-      if (d2 < minD * minD && d2 > 0.0001) {
-        const d = Math.sqrt(d2), push = (minD - d) / d * 0.5;
-        s.pos.x -= ddx * push; s.pos.z -= ddz * push;
-        o.pos.x += ddx * push; o.pos.z += ddz * push;
-      }
-    }
+    /* 分离力在单位循环之后统一迭代，见 separateUnits() */
 
     /* 贴身 Too close: 微微推开，避免糊住镜头 */
     if (dist < 2.6 && !s.officer) {
@@ -2094,6 +2101,44 @@ function updateEnemies(dt) {
     /* 受击倾角回落；死亡倒地由 dead 分支单独处理 */
     s.hitLean = damp(s.hitLean || 0, 0, 5, dt);
     s.tilt = damp(s.tilt, s.hitLean || 0, 10, dt);
+  }
+
+  /* 单位之间的实体分离：单轮 + 较强推力（2 轮在 60 人同屏时性价比不成立） */
+  separateUnits(0.55); separateUnits(0.35);
+}
+
+/* 空间哈希分离：只比较 3×3 邻域，每对只处理一次 */
+function separateUnits(strength) {
+  for (let i = 0; i < MAXE; i++) {
+    const s = E[i];
+    if (!s.active || s.dead) continue;
+    const cx = gridCell(s.pos.x), cz = gridCell(s.pos.z);
+    for (let gz = cz - 1; gz <= cz + 1; gz++) {
+      if (gz < 0 || gz >= GRID_N) continue;
+      for (let gx = cx - 1; gx <= cx + 1; gx++) {
+        if (gx < 0 || gx >= GRID_N) continue;
+        let j = gridHead[gz * GRID_N + gx];
+        while (j !== -1) {
+          const jn = gridNext[j];
+          if (j > i) {
+            const o = E[j];
+            if (o.active && !o.dead) {
+              const ddx = o.pos.x - s.pos.x, ddz = o.pos.z - s.pos.z;
+              const d2 = ddx * ddx + ddz * ddz;
+              const minD = (s.scale + o.scale) * 0.52;
+              if (d2 < minD * minD) {
+                if (d2 > 0.0001) {
+                  const d = Math.sqrt(d2), push = (minD - d) / d * strength;
+                  s.pos.x -= ddx * push; s.pos.z -= ddz * push;
+                  o.pos.x += ddx * push; o.pos.z += ddz * push;
+                } else { s.pos.x -= 0.01; o.pos.x += 0.01; }
+              }
+            }
+          }
+          j = jn;
+        }
+      }
+    }
   }
 }
 
