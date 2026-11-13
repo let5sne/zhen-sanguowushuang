@@ -668,8 +668,8 @@ const GROUND_R = 62;
    t=0 圆形（x,z,r）；t=1 轴对齐盒（x,z,半宽 hx, 半深 hz）
    只登记"看得见、踩不过去"的实体：关楼、营帐。碎石/木箱太矮，直接跨过。 */
 const BLOCKERS = [];
-function addBoxBlocker(x, z, hx, hz) { BLOCKERS.push({ t: 1, x, z, hx, hz }); }
-function addCircleBlocker(x, z, r) { BLOCKERS.push({ t: 0, x, z, r }); }
+function addBoxBlocker(x, z, hx, hz, h) { BLOCKERS.push({ t: 1, x, z, hx, hz, h: h || 99 }); }
+function addCircleBlocker(x, z, r, h) { BLOCKERS.push({ t: 0, x, z, r, h: h || 99 }); }
 /* 单个采样点相对所有碰撞体的推出量（写入 out，返回 out） */
 const _push = { x: 0, z: 0 };
 function blockerPush(px, pz, radius) {
@@ -693,6 +693,21 @@ function blockerPush(px, pz, radius) {
     }
   }
   return _push;
+}
+
+/* 箭矢用：点 (x,y,z) 是否打进了某个碰撞体（带高度判断） */
+function pointBlocked(x, y, z, r) {
+  for (let i = 0; i < BLOCKERS.length; i++) {
+    const b = BLOCKERS[i];
+    if (y > b.h) continue;
+    if (b.t === 0) {
+      const dx = x - b.x, dz = z - b.z, min = b.r + r;
+      if (dx * dx + dz * dz < min * min) return b;
+    } else {
+      if (Math.abs(x - b.x) < b.hx + r && Math.abs(z - b.z) < b.hz + r) return b;
+    }
+  }
+  return null;
 }
 
 /* 宽相：这个点附近（margin 内）有没有碰撞体。用外接圆做廉价剔除 */
@@ -891,7 +906,7 @@ const fires = [];
   const g = new THREE.Group();
   const GZ = -40;
   /* 关楼整体阻挡：左右箭楼各 7×7（中心 ±8.5），中间城墙 10×5，城门是实心门扇 */
-  addBoxBlocker(0, GZ, 12.2, 3.6);
+  addBoxBlocker(0, GZ, 12.2, 3.6, 13);
   for (const sx of [-1, 1]) {
     const tw = new THREE.Mesh(new THREE.BoxGeometry(7, 11, 7), stone);
     tw.position.set(sx * 8.5, 5.5, GZ); g.add(tw);
@@ -986,7 +1001,7 @@ const fires = [];
     const p = new THREE.Mesh(new THREE.CylinderGeometry(.05, .05, 4.4, 5), poleMat);
     p.position.y = 2.2; g.add(p);
     g.position.set(x, 0, z); g.rotation.y = rand(0, TAU);
-    addCircleBlocker(x, z, 2.15);
+    addCircleBlocker(x, z, 2.15, 3.6);
     scene.add(g);
   }
 }
@@ -2462,8 +2477,21 @@ function updateArrows(dt) {
     if (!a.on) continue;
     a.t += dt;
     a.v.y -= 3.2 * dt;
+    const __ax = a.m.position.x, __ay = a.m.position.y, __az = a.m.position.z;
     a.m.position.addScaledVector(a.v, dt);
     a.m.lookAt(_v3.copy(a.m.position).add(a.v));
+    /* 建筑遮挡：对"上一帧位置→当前位置"做 3 点采样，低帧率下也不会穿过薄墙 */
+    let hitB = null;
+    for (let k = 0; k <= 2 && !hitB; k++) {
+      const t = k * 0.5;
+      hitB = pointBlocked(__ax + (a.m.position.x - __ax) * t,
+                          __ay + (a.m.position.y - __ay) * t,
+                          __az + (a.m.position.z - __az) * t, 0.06);
+    }
+    if (hitB) {
+      burst(a.m.position, 4, { color: 0xd8c8a8, speed: 2.4, up: 1.4, life: .3, size: .18, grav: -8 });
+      a.on = false; a.m.visible = false; continue;
+    }
     const dx = a.m.position.x - player.pos.x, dz = a.m.position.z - player.pos.z;
     if (dx * dx + dz * dz < 0.55 && a.m.position.y < 2.2) {
       damagePlayer(6, dx, dz); a.on = false; a.m.visible = false; continue;
@@ -2938,7 +2966,7 @@ function photoInfo(){
     ibl:iblAudit,postPasses:composer.passes.length,shadowBodyBatches:Object.values(skinShadowBatches).filter(m=>m.count>0).length};
 }
 window.__dbg = {
-  THREE, BLOCKERS, resolveBlockers, blockerPush, scene, camera, player, player3, G, E, renderer, composer, bloom, gradePass, sun, nearSun, atmosphere, assets:assetInventory, shadowBodies:skinShadowBatches,
+  THREE, BLOCKERS, resolveBlockers, blockerPush, pointBlocked, ARROWS, scene, camera, player, player3, G, E, renderer, composer, bloom, gradePass, sun, nearSun, atmosphere, assets:assetInventory, shadowBodies:skinShadowBatches,
   start() { startGame(); },
   st() {
     return { state: G.state, hp: +player.hp.toFixed(1), musou: +player.musou.toFixed(1), ko: player.ko,
