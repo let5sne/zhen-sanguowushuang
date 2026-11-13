@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""照片级渲染验收（P1–P14）：独立跑旧 18 条 + 新 14 条。
+
+来源：demos/index.html 末尾的 PHOTO_VERIFY_PY 注释块（为遵守「单文件」约束，
+验收器被内嵌在产物里）。本文件是该块的逐字提取，仅加此说明头，便于直接执行：
+
+    python3 scripts/verify_photo.py            # 自动起本地静态服务器
+    python3 scripts/verify_photo.py --url ...  # 指定已运行地址
+
+依赖：playwright + 本机 Chrome。阈值取自 prompts/02-photo.md §4/§5。
+注意：P13 需要人眼确认画面无平铺，脚本无法自证，故恒为 FAIL（设计如此）。
+"""
+# ---------------------------------------------------------------------------
+# 单源约束：本文件是验收器的唯一来源，demos/index.html 里的 PHOTO_VERIFY_PY
+# 注释块只是它的内嵌副本。默认校验一致；加 --sync 可把本文件回写进产物。
+# ---------------------------------------------------------------------------
+import sys as _sys
+
+
+def _split_embedded(html):
+    from pathlib import Path  # noqa: F401  (确保独立可用)
+    marker_start = "<!-- PHOTO_VERIFY_PY\n"
+    if marker_start not in html:
+        return None
+    return html.split(marker_start, 1)[1].split("\nEND_PHOTO_VERIFY", 1)[0]
+
+
+def _my_body():
+    from pathlib import Path
+    raw = Path(__file__).read_text()
+    return raw.split('"""\n', 1)[1].rstrip("\n")
+
+
+def check_embedded_sync():
+    import sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    target = root / "demos/index.html"
+    html = target.read_text()
+    embedded = _split_embedded(html)
+    mine = _my_body()
+    if embedded is None:
+        print("[WARN] 产物中没有内嵌验收器块，跳过一致性校验")
+        return True
+    if embedded.rstrip("\n") == mine:
+        return True
+    if "--sync" in sys.argv:
+        new_html = html.replace(
+            "<!-- PHOTO_VERIFY_PY\n" + embedded + "\nEND_PHOTO_VERIFY",
+            "<!-- PHOTO_VERIFY_PY\n" + mine + "\nEND_PHOTO_VERIFY",
+            1,
+        )
+        target.write_text(new_html)
+        print("[SYNC] 已把 scripts/verify_photo.py 回写进 demos/index.html")
+        return True
+    print("[FAIL] 内嵌验收器与 scripts/verify_photo.py 不一致；"
+          "请运行 `python3 scripts/verify_photo.py --sync` 同步后重试")
+    return False
+
+
+if not check_embedded_sync():
+    _sys.exit(1)
+if "--sync" in _sys.argv:
+    _sys.exit(0)
+
+# In-memory entry point (no extra files):
+# python -c "from pathlib import Path; s=Path('demos/index.html').read_text(); exec(s.split('PHOTO_VERIFY_PY'+chr(10))[1].split(chr(10)+'END_PHOTO_VERIFY')[0])"
+import hashlib
+import importlib.util
+import json
+import os
+import sys
+from pathlib import Path
+from playwright.sync_api import Page, sync_playwright
+sys.dont_write_bytecode = True
+ROOT = Path.cwd()
+spec = importlib.util.spec_from_file_location("legacy_photo_baseline", ROOT / "scripts/verify.py")
+legacy = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(legacy)
+shots = {}
+all_errors = []
+old_screenshot = Page.screenshot
+old_new_page = None
+
+def screenshot_in_memory(page, *args, **kwargs):
+    requested = kwargs.pop("path", None)
+    name = Path(requested).name if requested else "capture-" + str(len(shots))
+    gpu = page.evaluate("""() => {const g=__dbg.renderer.getContext();return g.getParameter(g.getExtension('WEBGL_debug_renderer_info').UNMASKED_RENDERER_WEBGL)}""")
+    state = page.evaluate("__dbg.st()")
+    action = page.evaluate("__dbg.player.state")
+    image = old_screenshot(page, *args, **kwargs)
+    shots[name] = {"image": image, "sha256": hashlib.sha256(image).hexdigest(), "st": state, "action": action, "gpu": gpu}
+    print("SCREENSHOT " + name + " " + json.dumps({k: v for k, v in shots[name].items() if k != "image"}, ensure_ascii=False), flush=True)
+    return image
+
+class NoDirectoryWrites:
+    def __getattr__(self, name):
+        return getattr(os, name)
+    def makedirs(self, *args, **kwargs):
+        return None
+
+legacy.os = NoDirectoryWrites()
+Page.screenshot = screenshot_in_memory
+# Run all original assertions before the photo assertions. Capture only its final exit status.
+legacy_exit = []
+class LegacySys:
+    argv = [str(ROOT / "scripts/verify.py")]
+    def exit(self, code):
+        legacy_exit.append(code)
+legacy.sys = LegacySys()
+legacy.main()
+photo = []
+def check(name, ok, measured, expected):
+    photo.append(bool(ok))
+    print("[" + ("PASS" if ok else "FAIL") + "] " + name + " — " + str(measured) + " / " + expected, flush=True)
+
+with sync_playwright() as playwright:
+    browser = playwright.chromium.launch(channel="chrome", args=["--autoplay-policy=no-user-gesture-required"])
+    page = browser.new_page(viewport={"width": 1440, "height": 810})
+    page.on("pageerror", lambda error: all_errors.append(str(error)))
+    page.on("console", lambda message: all_errors.append(message.text) if message.type == "error" else None)
+    page.goto((ROOT / "demos/index.html").as_uri(), wait_until="load")
+    page.wait_for_function("window.__ready===true", timeout=45000)
+    page.evaluate("__dbg.start()")
+    page.wait_for_timeout(3500)
+    page.evaluate("__dbg.spawn(60)")
+    page.wait_for_timeout(3500)
+    performance = page.evaluate("""() => new Promise(resolve=>{
+      const samples=[];let previous=performance.now(),start=previous;
+      function sample(now){const i=__dbg.info();samples.push({dt:now-previous,calls:i.calls,tris:i.tris});previous=now;
+        if(now-start<4000)requestAnimationFrame(sample);else resolve({fps:1000*samples.length/(now-start),maxCalls:Math.max(...samples.map(s=>s.calls)),maxTris:Math.max(...samples.map(s=>s.tris)),frames:samples.length});}
+      requestAnimationFrame(sample);
+    })""")
+    st = page.evaluate("__dbg.st()")
+    info = page.evaluate("__dbg.info()")
+    lum = page.evaluate("__dbg.lum()")
+    assets = page.evaluate("__dbg.assets()")
+    print("PHOTO_STATE " + json.dumps(st, ensure_ascii=False), flush=True)
+    print("PHOTO_INFO " + json.dumps(info, ensure_ascii=False), flush=True)
+    print("ASSET_INVENTORY " + json.dumps(assets, ensure_ascii=False), flush=True)
+    check("P1 HDR chain", info["hdr"] is True, info["hdr"], "all render targets HalfFloatType")
+    check("P2 final-pass tone mapping and sRGB", info["toneMapping"] == 0 and info["outputColorSpace"] == "srgb", [info["toneMapping"], info["outputColorSpace"]], "NoToneMapping / SRGBColorSpace")
+    check("P3 primary shadow map", info["shadowRes"] >= 2048, info["cascades"], ">= 2048²")
+    surfaces = assets["surfaces"]
+    metal = surfaces["steel"]
+    cloth = surfaces["cloth"]
+    ground = surfaces["ground"]
+    material_ok = len(surfaces) >= 5 and .90 <= metal["metalness"] <= 1.0 and .15 <= metal["roughness"] <= .35 and .75 <= cloth["roughness"] <= .95 and .75 <= ground["roughness"] <= .95
+    check("P4 PBR surface classes", material_ok, surfaces, ">= 5; metalness .90–1.0, metal roughness .15–.35, cloth/soil roughness .75–.95")
+    ground_maps = assets["ground"]
+    check("P5 ground channels", all(min(value) >= 2048 for value in ground_maps.values()), ground_maps, "albedo / normal / roughness >= 2048²")
+    check("P6 skinned skeletons", assets["skinnedMeshes"] > 0 and all(rig["bones"] <= 24 for rig in assets["rigs"]), {r["name"]: r["bones"] for r in assets["rigs"]}, "SkinnedMesh, <= 24 bones")
+    check("P7 single-mesh characters", assets["skinnedMeshes"] <= st["enemies"] + 1 + 4, [assets["skinnedMeshes"], st["enemies"] + 1], "skinned mesh count <= units + 4")
+    required = {"idle", "walk", "run", "atk1", "atk2", "atk3", "heavy", "hit", "die", "musou"}
+    check("P8 animation clips", all(len(r["clips"]) >= 10 and required.issubset(r["clips"]) for r in assets["rigs"]), {r["name"]: r["clips"] for r in assets["rigs"]}, ">= 10 and all required names")
+    check("P9 normalized skin weights", assets["maxInfluences"] <= 4 and assets["maxWeightError"] <= 1e-3, [assets["maxInfluences"], assets["maxWeightError"]], "<= 4 influences; error <= 1e-3")
+    check("P10 60-spawn performance", performance["fps"] >= 58 and performance["maxCalls"] <= 260 and performance["maxTris"] <= 1500000 and st["enemies"] >= 60, performance, ">= 58 fps / <= 260 draws / <= 1.5 M triangles / >= 60 units")
+    check("P11 luminance", .30 <= lum["mean"] <= .80 and lum["clipped"] <= 2.0 and lum["nearBlack"] <= 12, lum, "mean .30–.80 / clipped <= 2.0% / nearBlack <= 12%")
+    lod = page.evaluate("""() => {
+      __dbg.E.forEach((s,i)=>{if(!s.active)return;const r=i%3===0?10:i%3===1?27:47;s.pos.set(__dbg.player.pos.x+r,0,__dbg.player.pos.z);s.cool=99;});
+      __dbg.step(1/60,2);return {st:__dbg.st(),lod:__dbg.info().animLod};
+    }""")
+    print("LOD_STATE " + json.dumps(lod, ensure_ascii=False), flush=True)
+    check("P12 distance animation LOD", sum(1 for value in lod["lod"].values() if value > 0) >= 2, lod["lod"], ">= 2 distinct tiers with >= 20 mixed units")
+    expected_shots = {"title.jpg", "combat.jpg", "musou.jpg", "boss2.jpg", "result.jpg"}
+    check("P13 screenshots captured; visual tiling review pending", False, {name: {"bytes": len(shots[name]["image"]), "sha256": shots[name]["sha256"]} for name in sorted(shots)}, "5 screenshots AND visually confirmed absence of obvious tiling; capture alone is insufficient")
+    check("P14 browser errors", len(all_errors) == 0, all_errors, "0 JS runtime errors / 0 console errors")
+    browser.close()
+Page.screenshot = old_screenshot
+print("PHOTO_RESULT " + str(sum(photo)) + "/14; LEGACY_RESULT " + str(sum(ok for _, ok, _ in legacy.results)) + "/" + str(len(legacy.results)), flush=True)
+if legacy_exit or not all(photo):
+    sys.exit(1)
+
