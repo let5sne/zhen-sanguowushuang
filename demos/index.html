@@ -663,6 +663,47 @@ scene.add(rim);
    4. 地形与场景道具
    ============================================================ */
 const GROUND_R = 62;
+
+/* ---------------- 静态碰撞体 ----------------
+   t=0 圆形（x,z,r）；t=1 轴对齐盒（x,z,半宽 hx, 半深 hz）
+   只登记"看得见、踩不过去"的实体：关楼、营帐。碎石/木箱太矮，直接跨过。 */
+const BLOCKERS = [];
+function addBoxBlocker(x, z, hx, hz) { BLOCKERS.push({ t: 1, x, z, hx, hz }); }
+function addCircleBlocker(x, z, r) { BLOCKERS.push({ t: 0, x, z, r }); }
+/* 把圆形单位推出所有碰撞体。
+   mvx/mvz 是这一帧的位移：撞圆时可以沿切线滑开，避免被顶死在原地。 */
+function resolveBlockers(pos, radius, mvx, mvz) {
+  for (let i = 0; i < BLOCKERS.length; i++) {
+    const b = BLOCKERS[i];
+    if (b.t === 0) {
+      let dx = pos.x - b.x, dz = pos.z - b.z;
+      let d = Math.hypot(dx, dz); const min = b.r + radius;
+      if (d < min) {
+        if (d < 1e-4) { dx = 1; dz = 0; d = 1; }
+        const nx = dx / d, nz = dz / d;
+        pos.x += nx * (min - d); pos.z += nz * (min - d);
+        /* 切向滑移：把"朝圆心"的分量转成沿表面的分量 */
+        if (mvx || mvz) {
+          const into = -(mvx * nx + mvz * nz);
+          if (into > 1e-5) {
+            const tx = -nz, tz = nx;
+            const sgn = (mvx * tx + mvz * tz) >= 0 ? 1 : -1;
+            const slide = Math.min(into * 1.6, min * 0.5);
+            pos.x += tx * sgn * slide; pos.z += tz * sgn * slide;
+          }
+        }
+      }
+    } else {
+      const dx = pos.x - b.x, dz = pos.z - b.z;
+      const px = b.hx + radius - Math.abs(dx), pz = b.hz + radius - Math.abs(dz);
+      if (px > 0 && pz > 0) {
+        if (px < pz) pos.x += (dx < 0 ? -1 : 1) * px;
+        else pos.z += (dz < 0 ? -1 : 1) * pz;
+      }
+    }
+  }
+  return pos;
+}
 const groundTex = makeGroundTexture();
 groundTex.repeat.set(18, 18);
 const groundNrm = makeNormalFromCanvas(groundTex.image, 2048, 3.2);
@@ -792,6 +833,8 @@ const fires = [];
   const tile = new THREE.MeshStandardMaterial({ color: 0x2f3338, roughness: .8, metalness: .15 });
   const g = new THREE.Group();
   const GZ = -40;
+  /* 关楼整体阻挡：左右箭楼各 7×7（中心 ±8.5），中间城墙 10×5，城门是实心门扇 */
+  addBoxBlocker(0, GZ, 12.2, 3.6);
   for (const sx of [-1, 1]) {
     const tw = new THREE.Mesh(new THREE.BoxGeometry(7, 11, 7), stone);
     tw.position.set(sx * 8.5, 5.5, GZ); g.add(tw);
@@ -886,6 +929,7 @@ const fires = [];
     const p = new THREE.Mesh(new THREE.CylinderGeometry(.05, .05, 4.4, 5), poleMat);
     p.position.y = 2.2; g.add(p);
     g.position.set(x, 0, z); g.rotation.y = rand(0, TAU);
+    addCircleBlocker(x, z, 2.15);
     scene.add(g);
   }
 }
@@ -1879,6 +1923,7 @@ function updateEnemies(dt) {
 
     s.cool -= dt;
     s.t += dt;
+    const ox = s.pos.x, oz = s.pos.z;
 
     /* 攻击状态机 */
     if (s.state === 'wind') {
@@ -1962,7 +2007,8 @@ function updateEnemies(dt) {
       s.pos.z -= nz * (2.6 - dist) * 0.6;
     }
 
-    /* 战场边界 */
+    /* 建筑碰撞 + 战场边界（带切向滑移，避免被营帐顶死） */
+    resolveBlockers(s.pos, .42 * s.scale, s.pos.x - ox, s.pos.z - oz);
     const r = Math.hypot(s.pos.x, s.pos.z);
     const lim = GROUND_R - 6;
     if (r > lim) { s.pos.x *= lim / r; s.pos.z *= lim / r; }
@@ -2149,6 +2195,7 @@ function updatePlayer(dt) {
 
   player.pos.x += player.vel.x * dt;
   player.pos.z += player.vel.z * dt;
+  resolveBlockers(player.pos, player.radius, player.vel.x * dt, player.vel.z * dt);   /* 关楼 / 营帐 不可穿过 */
   const pr = Math.hypot(player.pos.x, player.pos.z), plim = GROUND_R - 5;
   if (pr > plim) { player.pos.x *= plim / pr; player.pos.z *= plim / pr; }
 
@@ -2817,7 +2864,7 @@ function photoInfo(){
     ibl:iblAudit,postPasses:composer.passes.length,shadowBodyBatches:Object.values(skinShadowBatches).filter(m=>m.count>0).length};
 }
 window.__dbg = {
-  THREE, scene, camera, player, player3, G, E, renderer, composer, bloom, gradePass, sun, nearSun, atmosphere, assets:assetInventory, shadowBodies:skinShadowBatches,
+  THREE, BLOCKERS, scene, camera, player, player3, G, E, renderer, composer, bloom, gradePass, sun, nearSun, atmosphere, assets:assetInventory, shadowBodies:skinShadowBatches,
   start() { startGame(); },
   st() {
     return { state: G.state, hp: +player.hp.toFixed(1), musou: +player.musou.toFixed(1), ko: player.ko,
