@@ -30,6 +30,8 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0a0908;color:#f0e6d
 #ko{margin-top:4px;font-size:13px;letter-spacing:3px;opacity:.75}
 #ko b{font-size:26px;color:#fff;letter-spacing:1px;vertical-align:-2px;margin:0 4px;
   font-variant-numeric:tabular-nums}
+#chapterNo{position:fixed;top:22px;right:50%;transform:translateX(50%);z-index:5;
+  font-size:13px;letter-spacing:6px;color:#e8c37a;opacity:.85;text-shadow:0 2px 8px rgba(0,0,0,.8)}
 #timer{position:absolute;top:24px;right:34px;font-size:22px;letter-spacing:2px;
   font-variant-numeric:tabular-nums;opacity:.85;text-shadow:0 2px 8px #000}
 
@@ -161,6 +163,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0a0908;color:#f0e6d
     <div id="stage">第一章 · <b>虎牢关之战</b></div>
     <div id="ko">击破 <b id="koN">0</b></div>
   </div>
+  <div id="chapterNo"></div>
   <div id="timer">00:00</div>
   <div id="boss"><div class="nm"></div><div class="bar"><i></i><u></u></div><div id="poiseBar"><i></i><span>架势</span></div></div>
   <div id="pl">
@@ -2165,8 +2168,8 @@ function spawnEnemy(type, x, z, opt = {}) {
   const d = TYPES[type];
   s.active = true; s.wasActive = true; s.type = type;
   s.pos.set(x, 0, z); s.yaw = Math.atan2(player.pos.x - x, player.pos.z - z);
-  s.maxhp = s.hp = d.hp * (opt.hpMul || 1);
-  s.spd = d.spd * rand(.92, 1.08); s.dmg = d.dmg; s.range = d.range; s.reach = d.reach;
+  s.maxhp = s.hp = d.hp * (opt.hpMul || 1) * (G.hpMul || 1);
+  s.spd = d.spd * rand(.92, 1.08); s.dmg = d.dmg * (G.dmgMul || 1); s.range = d.range; s.reach = d.reach;
   s.scale = d.scale * (opt.scale || 1) * rand(.96, 1.04);
   s.state = 'chase'; s.t = 0; s.atkP = 0; s.cool = rand(.2, 1.4); s.phase = rand(0, TAU);
   s.flash = 0; s.tilt = 0; s.dead = false; s.deadT = 0; s.spawnT = 0;
@@ -3328,6 +3331,8 @@ function updateHUD(dt) {
   UI.musouF.style.transform = `scaleX(${mk})`;
   UI.musou.classList.toggle('full', mk >= 0.999);
   UI.ko.textContent = player.ko;
+  const ch = document.getElementById('chapterNo');
+  if (ch) ch.textContent = G.chapter > 1 ? `第 ${G.chapter} 章` : '';
   const pk = UI.poise.children;
   if (pk.length !== player.maxPoise) {
     UI.poise.innerHTML = '';
@@ -3364,7 +3369,7 @@ function updateHUD(dt) {
 /* ============================================================
    11. 关卡导演
    ============================================================ */
-const G = { state: 'menu', time: 0, target: 60, spawnT: 0, boss: null, boss2Spawned: false, boss2Up: false, slow: 0, ended: false };
+const G = { state: 'menu', chapter: 1, hpMul: 1, dmgMul: 1, time: 0, target: 60, spawnT: 0, boss: null, boss2Spawned: false, boss2Up: false, slow: 0, ended: false };
 
 const UPGRADES = [
   { id: 'edge',  n: '烈刃', d: '造成的伤害 +18%',        apply: () => { player.dmgMul *= 1.18; } },
@@ -3457,7 +3462,7 @@ function spawnOfficer(name, hp, scale, tint) {
     officer: true, name, hpMul: 1, scale, tint
   });
   if (!s) return;
-  s.maxhp = s.hp = hp;
+  s.maxhp = s.hp = hp * (G.hpMul || 1);
   s.spd = TYPES.officer.spd; s.dmg = TYPES.officer.dmg;
   s.range = TYPES.officer.range; s.reach = TYPES.officer.reach;
   /* 敌将专属技能：华雄横扫 / 吕布冲锋 */
@@ -3534,7 +3539,8 @@ function showResult(win) {
   if (win) { SFX.gong(); setTimeout(() => SFX.gong(), 300); }
   const r = $('#result');
   r.classList.remove('hide');
-  r.querySelector('h2').textContent = win ? '敌将讨取' : '力尽而倒';
+  r.querySelector('h2').textContent = win ? `第 ${G.chapter} 章 · 完` : '力尽而倒';
+  r.querySelector('.go').textContent = win ? '点击继续进军' : '点击再战';
   const t = Math.floor(G.time);
   r.querySelector('.stat').innerHTML =
     `击破 <b>${player.ko}</b> ・ 用时 <b>${String((t / 60) | 0).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}</b><br>` +
@@ -3553,7 +3559,33 @@ function startGame() {
   lockPointer();
 }
 $('#title').addEventListener('click', startGame);
-$('#result').addEventListener('click', () => { $('#result').classList.add('hide'); startGame(); });
+$('#result').addEventListener('click', () => {
+  const win = G.state === 'result' && G.ended && player.hp > 0;
+  $('#result').classList.add('hide');
+  if (win) nextChapter(); else startGame();
+});
+
+/* 章节推进：敌将强度与目标规模递增，玩家回满并保留强化 */
+function nextChapter() {
+  G.chapter++;
+  G.hpMul = 1 + 0.12 * (G.chapter - 1);
+  G.dmgMul = 1 + 0.10 * (G.chapter - 1);
+  G.target = Math.min(96, 60 + 8 * (G.chapter - 1));
+  G.time = 0; G.boss = null; G.boss2Spawned = false; G.boss2Up = false; G.ended = false;
+  G.slow = 0; G.spawnT = 0; G.lastKm = 0; G.maxCombo = 0;
+  for (const s of E) { s.active = false; s.dead = true; s.hp = 0; if (s.rig) { releaseRig(s.rig); s.rig = null; } }
+  ARROWS.forEach(a => { a.active = false; });
+  player.hp = player.maxhp; player.musou = 0; player.ko = 0; player.combo = 0;
+  player.dead = false; player.hurtT = 0; player.invuln = 1.2; player.state = 'idle';
+  player.pos.set(0, 0, 12); player.vel.set(0, 0, 0); player.yaw = Math.PI;
+  player.airY = 0; player.vy = 0; player.airAtk = false;
+  PRESSURE.reset();
+  G.state = 'play';
+  UI.hud.classList.add('on');
+  callout(`第 ${G.chapter} 章`, '敌 军 再 来');
+  SFX.gong();
+  setTimeout(() => { if (G.state === 'play' && !G.boss) { callout('华雄', '敌 将 出 阵'); spawnOfficer('华雄', 620, 1.30, 0xd8b25a); } }, 1500);
+}
 
 /* ============================================================
    12. 主循环
