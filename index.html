@@ -2050,7 +2050,7 @@ function updateEnemyRigs(dt) {
     max=i;const kind=s.officer?'officer':s.type;
     if(s.rig&&s.rig.mesh.userData.kind!==kind){ releaseRig(s.rig); s.rig=null; }
     if(!s.rig){ s.rig=acquireRig(kind); scene.add(s.rig.mesh); }
-    const r=s.rig;if(!r.mesh.parent)scene.add(r.mesh);r.mesh.visible=true;
+    const r=s.rig;if(!r.mesh.parent)scene.add(r.mesh);r.mesh.visible=true;r.mesh.position.y=s.airY||0;
     /* 盾牌：仅前排盾兵，挂左前臂骨骼 */
     const wantShield = s.role === 'front' && s.shield > 0 && !s.dead;
     if (wantShield && !r.shieldMesh) {
@@ -2179,7 +2179,9 @@ function spawnEnemy(type, x, z, opt = {}) {
   s.side = Math.random() < .5 ? -1 : 1;
   s.shield = (s.role === 'front' && Math.random() < .6) ? 1 : 0;
   s.stagMax = (d.poise || 1) + (s.shield ? 1 : 0);
-  s.stagAcc = 0; s.stagT = 0;   /* 混合阵线：六成持盾 */
+  s.stagAcc = 0; s.stagT = 0;
+  s.airY = 0; s.airV = 0; s.airborne = false; s.airSpin = 0;
+  s.atkCount = 0; s.heavyAtk = false; s.windMul = 1;   /* 混合阵线：六成持盾 */
   s.tint.set(opt.tint ?? d.tint);
   if (opt.officer) s.tint.set(opt.tint || 0xd8b25a);
   return s;
@@ -2444,6 +2446,19 @@ function updateEnemies(dt) {
       if ((s.poiseT || 0) > 0) s.poiseT -= dt;
       else s.poise = Math.max(0, s.poise - 9 * dt);
     }
+    /* 浮空物理：重力 26 m/s²，落地进入硬直 */
+    if (s.airborne) {
+      s.airV -= 26 * dt;
+      s.airY += s.airV * dt;
+      if (s.airY <= 0) {
+        s.airY = 0; s.airborne = false;
+        s.state = 'stagger'; s.t = 0;
+        s.hp -= 4;
+        burst(_v3.copy(s.pos).setY(.2), 6, { color: 0xbfae8e, speed: 3, up: 1.4, life: .35, size: .5, grav: -3 });
+        if (s.hp <= 0) { killEnemy(s); continue; }
+      }
+    }
+
     /* 杂兵架势：脱手 2.2s 后开始恢复（每秒 0.7 点） */
     if (!s.officer && s.stagAcc > 0) {
       if (s.stagT > 0) s.stagT -= dt;
@@ -2452,18 +2467,19 @@ function updateEnemies(dt) {
 
     /* 攻击状态机 */
     if (s.state === 'wind') {
-      s.atkP = clamp(s.t / TYPES[s.type].wind, 0, 1);
-      s.yaw = angTo(s.yaw, Math.atan2(nx, nz), dt * 6);
+      s.atkP = clamp(s.t / (TYPES[s.type].wind * (s.windMul || 1)), 0, 1);
+      s.yaw = angTo(s.yaw, Math.atan2(nx, nz), dt * (s.heavyAtk ? 3 : 6));
       if (s.atkP >= 1) {
         s.state = 'strike'; s.t = 0;
         if (s.type === 'archer') shootArrow(s, nx, nz);
         else {
-          SFX.swing(false);
+          SFX.swing(!!s.heavyAtk);
           const reach = s.reach;
-          if (dist < reach + 0.55 && Math.abs(angDiff(Math.atan2(nx, nz), s.yaw)) < 1.15) {
-            damagePlayer(s.dmg, nx, nz);
+          if (dist < reach + (s.heavyAtk ? 1.4 : 0.55) && Math.abs(angDiff(Math.atan2(nx, nz), s.yaw)) < 1.35) {
+            damagePlayer(s.dmg * (s.heavyAtk ? 1.7 : 1), nx, nz, s.heavyAtk);
           }
         }
+        s.heavyAtk = false; s.windMul = 1;
       }
     } else if (s.state === 'strike') {
       const dur = TYPES[s.type].strike;
@@ -2474,6 +2490,9 @@ function updateEnemies(dt) {
         s.state = 'chase'; s.t = 0; s.cool = rand(.5, 1.6);
         if (!s.officer) attackTokens = Math.max(0, attackTokens - 1);
       }
+    } else if (s.state === 'launched') {
+      /* 浮空中：不能行动，随自旋翻转 */
+      s.t += 0;
     } else if (s.state === 'stagger') {
       if (s.t > 0.34) { s.state = 'chase'; s.t = 0; s.cool = Math.max(s.cool, .25); }
     } else {
@@ -2509,9 +2528,20 @@ function updateEnemies(dt) {
       }
 
       /* 近战：进入攻击距离且令牌可用就抬手 */
-      if (s.type !== 'archer' && !s.officer && s.cool <= 0 && dist < s.range * .92 && attackTokens < MAX_TOKENS) {
+      if (s.type !== 'archer' && s.cool <= 0 && dist < s.range * .92 && attackTokens < MAX_TOKENS) {
         s.state = 'wind'; s.t = 0; attackTokens++;
         s.cool = rand(1.4, 2.8);
+        /* 敌将每 3 次普攻来一发红色不可格挡的重击 */
+        if (s.officer) {
+          s.atkCount = (s.atkCount || 0) + 1;
+          s.heavyAtk = (s.atkCount % 3 === 0);
+          s.windMul = s.heavyAtk ? 1.55 : 1;
+          if (s.heavyAtk) {
+            shockRing(s.pos, s.reach + 1.2, TYPES.officer.wind * 1.55 * .92, 0xff3020);
+            SFX.drum(1.15);
+            callout('危', '不 可 格 挡');
+          }
+        } else { s.heavyAtk = false; s.windMul = 1; }
         continue;
       }
 
@@ -2846,7 +2876,7 @@ function updatePlayer(dt) {
           if (!s.active || s.dead) continue;
           const ldx = s.pos.x - player.pos.x, ldz = s.pos.z - player.pos.z;
           const ld = Math.hypot(ldx, ldz);
-          if (ld < 3.9) damageEnemy(s, 46 * player.dmgMul, ldx / (ld || 1), ldz / (ld || 1), 1.15);
+          if (ld < 3.9) { damageEnemy(s, 46 * player.dmgMul, ldx / (ld || 1), ldz / (ld || 1), 1.15); launchEnemy(s, 1.2); }
         }
         burst(_v3.copy(player.pos).setY(.18), 18, { color: 0xd8c8a8, speed: 6, up: 2.4, life: .5, size: .6, grav: -6, drag: 2.4 });
       } else {
@@ -2956,6 +2986,7 @@ function resolvePlayerHit(atk) {
     if (Math.abs(angDiff(Math.atan2(dx, dz), player.yaw)) > halfArc) continue;
     const nx = dx / (d || 1), nz = dz / (d || 1);
     damageEnemy(s, dmg * rand(.92, 1.08), nx, nz, atk.weight ?? (heavy ? 1 : 0.5));
+    if (atk.launch && !s.dead) launchEnemy(s, 1);
     hits++;
     if (hits > 28) break;   /* 一次挥击最多结算 28 个目标（伤害数字有池，DOM 无压力） */
   }
@@ -2966,7 +2997,7 @@ function resolvePlayerHit(atk) {
 }
 
 /* ---------------- 玩家受击 / 无双 ---------------- */
-function damagePlayer(dmg, nx, nz) {
+function damagePlayer(dmg, nx, nz, unblockable) {
   if (player.invuln > 0 || player.dead || player.state === 'musou') return;
   /* 完美闪避：闪避前 0.14 s 内被击中 → 无伤 + 子弹时间 + 返还 CD */
   if (player.dashT > 0.08) {
@@ -2984,7 +3015,7 @@ function damagePlayer(dmg, nx, nz) {
   }
 
   /* 格挡：0.16s 内按下 = 精准弹反（无伤 + 顿帧 + 震退周围 + 攒槽），之后按住 = 减伤 80% */
-  if (player.blocking && player.hurtT <= 0) {
+  if (!unblockable && player.blocking && player.hurtT <= 0) {
     if (player.blockT <= 0.16) {
       player.musou = clamp(player.musou + 8, 0, player.maxMusou);
       player.invuln = Math.max(player.invuln, 0.25);
@@ -3019,7 +3050,7 @@ function damagePlayer(dmg, nx, nz) {
     return;
   }
   /* 霸体：蓄力重击期间（或刚挥出重击的 0.45 s 内）可硬吃攻击 */
-  if (player.poise > 0 && (player.charging || player.poiseT > 0)) {
+  if (!unblockable && player.poise > 0 && (player.charging || player.poiseT > 0)) {
     player.poise--;
     player.poiseT = 3.2;
     player.hp -= dmg * 0.6;
@@ -3032,6 +3063,11 @@ function damagePlayer(dmg, nx, nz) {
     popDamage(_v3.copy(player.pos).setY(2.05), '霸体', 'parry');
     if (player.hp <= 0) { player.hp = 0; playerDie(); }
     return;
+  }
+  if (unblockable && player.blocking) {
+    dmg *= 1.25;
+    popDamage(_v3.copy(player.pos).setY(2.1), '破 防', 'parry');
+    SFX.parry();
   }
   player.hp -= dmg;
   player.hurtT = 0.32; player.invuln = 0.8;
@@ -3209,6 +3245,17 @@ function tryLight() {
   player.atk.power = 1;
   chain = (chain + 1) % 3; chainT = 0.85;
 }
+/* 击飞：敌人被抛到空中，滞空期间无法行动 */
+function launchEnemy(s, power = 1) {
+  if (!s.active || s.dead || s.officer) return;
+  window.__launches = (window.__launches || 0) + 1;
+  s.airborne = true;
+  s.airV = 8.2 + power * 2.0;   /* 峰值约 2.1m、滞空 0.85s，够接浮空连段 */
+  s.airY = Math.max(s.airY || 0, 0.05);
+  s.airSpin = (Math.random() < .5 ? -1 : 1) * rand(3, 6);
+  s.state = 'launched'; s.t = 0; s.atkP = 0;
+}
+
 function releaseHeavy() {
   if (G.state !== 'play' || player.dead) return;
   if (player.state !== 'idle' && player.state !== 'run') { player.charging = false; return; }
@@ -3216,6 +3263,7 @@ function releaseHeavy() {
   aimAssist(5.2, 0.45);
   startAttack(0, 0.60, true);
   player.atk.power = pw;
+  player.atk.launch = pw > 1.2;      /* 蓄满才击飞 */
   player.charging = false; player.chargeT = 0;
   if (pw > 1.2) { shake(.3, .3); shockRing(player.pos, 4, .4, 0xffd9a0); }
   player.poiseT = Math.max(player.poiseT, 0.45);   /* 重击挥出瞬间也有霸体 */
@@ -3805,6 +3853,8 @@ window.__dbg = {
   jump() { tryJump(); return player.airY; },
   execute() { return tryExecute(); },
   light() { tryLight(); },
+  launchEnemy(s) { launchEnemy(s, 1); },
+  launches() { return window.__launches || 0; },
   damageEnemy(a, b, c, d, e) { damageEnemy(a, b, c, d, e); },
   fx: () => ({ hitStop: +hitStop.toFixed(3), shakeMag: +shakeMag.toFixed(2), shakeT: +shakeT.toFixed(2) }),
   clearFx: () => { hitStop = 0; shakeMag = 0; shakeT = 0; },
