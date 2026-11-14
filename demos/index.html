@@ -2147,11 +2147,11 @@ for (let i = 0; i < MAXE + 4; i++) shadowIM.setMatrixAt(i, ZERO_M);
 
 /* ---------------- 敌兵数据 ---------------- */
 const TYPES = {
-  dao: { hp: 30, spd: 3.05, dmg: 3.4, range: 2.35, wind: .40, strike: .13, rec: .38, scale: 1.00, tint: 0x8a5a3a, reach: 2.5, score: 1 },
-  spear: { hp: 40, spd: 2.55, dmg: 4.8, range: 3.15, wind: .50, strike: .15, rec: .46, scale: 1.03, tint: 0x44618f, reach: 3.4, score: 1 },
-  archer: { hp: 22, spd: 2.45, dmg: 2.4, range: 17, wind: .70, strike: .10, rec: .70, scale: 0.98, tint: 0x6f7038, reach: 0, score: 1 },
+  dao: { hp: 30, spd: 3.05, dmg: 3.4, range: 2.35, wind: .40, strike: .13, rec: .38, scale: 1.00, tint: 0x8a5a3a, reach: 2.5, score: 1, poise: 1 },
+  spear: { hp: 40, spd: 2.55, dmg: 4.8, range: 3.15, wind: .50, strike: .15, rec: .46, scale: 1.03, tint: 0x44618f, reach: 3.4, score: 1, poise: 2 },
+  archer: { hp: 22, spd: 2.45, dmg: 2.4, range: 17, wind: .70, strike: .10, rec: .70, scale: 0.98, tint: 0x6f7038, reach: 0, score: 1, poise: 1 },
   /* 敌将：独立类型，自带大开大合的前后摇（比枪兵更慢更重） */
-  officer: { hp: 620, spd: 3.4, dmg: 16, range: 3.6, wind: .62, strike: .20, rec: .58, scale: 1.30, tint: 0xd8b25a, reach: 5.6, score: 10 }
+  officer: { hp: 620, spd: 3.4, dmg: 16, range: 3.6, wind: .62, strike: .20, rec: .58, scale: 1.30, tint: 0xd8b25a, reach: 5.6, score: 10, poise: 5 }
 };
 const E = [];
 for (let i = 0; i < MAXE; i++) E.push({
@@ -2177,7 +2177,9 @@ function spawnEnemy(type, x, z, opt = {}) {
   /* 阵型角色：刀兵前排、枪兵侧翼、弓兵后排 */
   s.role = opt.officer ? 'boss' : (type === 'archer' ? 'back' : (type === 'spear' ? 'flank' : 'front'));
   s.side = Math.random() < .5 ? -1 : 1;
-  s.shield = (s.role === 'front' && Math.random() < .6) ? 1 : 0;   /* 混合阵线：六成持盾 */
+  s.shield = (s.role === 'front' && Math.random() < .6) ? 1 : 0;
+  s.stagMax = (d.poise || 1) + (s.shield ? 1 : 0);
+  s.stagAcc = 0; s.stagT = 0;   /* 混合阵线：六成持盾 */
   s.tint.set(opt.tint ?? d.tint);
   if (opt.officer) s.tint.set(opt.tint || 0xd8b25a);
   return s;
@@ -2248,7 +2250,21 @@ function damageEnemy(s, dmg, dirX, dirZ, heavy) {
   if (player.state !== 'musou') player.musou = clamp(player.musou + (heavy ? 2.6 : 1.1) * player.musouMul, 0, player.maxMusou);
   player.combo++; player.comboT = 2.6;
   if (s.hp <= 0) { killEnemy(s); return; }
-  if (s.state !== 'dead') { s.state = 'stagger'; s.t = 0; s.atkP = 0; }
+  /* 架势（硬直抗性）：轻击只攒架势，够了才打断；重击无视架势直接打断 */
+  if (s.state !== 'dead') {
+    const poiseDmg = w >= 1.0 ? 99 : (w >= .75 ? 2 : 1);
+    const stagMax = s.stagMax || 1;
+    if (poiseDmg >= 99 || (s.stagAcc || 0) + poiseDmg >= stagMax) {
+      s.stagAcc = 0; s.stagT = 3.0;
+      s.state = 'stagger'; s.t = 0; s.atkP = 0;
+    } else {
+      s.stagAcc = (s.stagAcc || 0) + poiseDmg;
+      s.stagT = Math.max(s.stagT || 0, 2.2);
+      /* 不打断，但攻击被打断为"踉跄"：只把攻击进度压回去一点 */
+      if (s.state === 'wind') s.atkP = Math.max(0, s.atkP - .25);
+      s.hitLean = (facingDot > 0 ? 1 : -1) * .1;
+    }
+  }
 }
 
 /* ---------------- 敌兵 AI ---------------- */
@@ -2427,6 +2443,11 @@ function updateEnemies(dt) {
     if (s.officer && (s.poise || 0) > 0) {
       if ((s.poiseT || 0) > 0) s.poiseT -= dt;
       else s.poise = Math.max(0, s.poise - 9 * dt);
+    }
+    /* 杂兵架势：脱手 2.2s 后开始恢复（每秒 0.7 点） */
+    if (!s.officer && s.stagAcc > 0) {
+      if (s.stagT > 0) s.stagT -= dt;
+      else s.stagAcc = Math.max(0, s.stagAcc - .7 * dt);
     }
 
     /* 攻击状态机 */
