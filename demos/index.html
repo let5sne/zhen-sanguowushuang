@@ -2868,7 +2868,7 @@ function updatePlayer(dt) {
       player.airY = 0; player.vy = 0;
       if (player.airAtk) {
         player.airAtk = false;
-        shockRing(player.pos, 4.6, .42, 0xffe0a0);
+        shockRing(player.pos, 5.2, .42, 0xffe0a0);
         shake(.34, .22);
         hitStop = Math.max(hitStop, .04);
         SFX.thud();
@@ -2876,7 +2876,7 @@ function updatePlayer(dt) {
           if (!s.active || s.dead) continue;
           const ldx = s.pos.x - player.pos.x, ldz = s.pos.z - player.pos.z;
           const ld = Math.hypot(ldx, ldz);
-          if (ld < 3.9) { damageEnemy(s, 46 * player.dmgMul, ldx / (ld || 1), ldz / (ld || 1), 1.15); launchEnemy(s, 1.2); }
+          if (ld < 4.6) { damageEnemy(s, 60 * player.dmgMul, ldx / (ld || 1), ldz / (ld || 1), 1.15); launchEnemy(s, 1.2); }
         }
         burst(_v3.copy(player.pos).setY(.18), 18, { color: 0xd8c8a8, speed: 6, up: 2.4, life: .5, size: .6, grav: -6, drag: 2.4 });
       } else {
@@ -2985,7 +2985,7 @@ function resolvePlayerHit(atk) {
     if (d > range + s.scale * 0.45) continue;
     if (Math.abs(angDiff(Math.atan2(dx, dz), player.yaw)) > halfArc) continue;
     const nx = dx / (d || 1), nz = dz / (d || 1);
-    damageEnemy(s, dmg * rand(.92, 1.08), nx, nz, atk.weight ?? (heavy ? 1 : 0.5));
+    damageEnemy(s, dmg * rand(.92, 1.08) * (s.airborne ? 1.4 : 1), nx, nz, atk.weight ?? (heavy ? 1 : 0.5));
     if (atk.launch && !s.dead) launchEnemy(s, 1);
     hits++;
     if (hits > 28) break;   /* 一次挥击最多结算 28 个目标（伤害数字有池，DOM 无压力） */
@@ -2999,6 +2999,7 @@ function resolvePlayerHit(atk) {
 /* ---------------- 玩家受击 / 无双 ---------------- */
 function damagePlayer(dmg, nx, nz, unblockable) {
   if (player.invuln > 0 || player.dead || player.state === 'musou') return;
+  if (player.airY > 0.02) dmg *= 0.5;   /* 浮空时更难被打中 */
   /* 完美闪避：闪避前 0.14 s 内被击中 → 无伤 + 子弹时间 + 返还 CD */
   if (player.dashT > 0.08) {
     player.musou = clamp(player.musou + 8 * player.musouMul, 0, player.maxMusou);
@@ -3288,7 +3289,8 @@ function tryJump() {
 function tryAirAttack() {
   if (player.airY <= 0.001 || player.airAtk) return false;
   player.airAtk = true;
-  player.vy = Math.min(player.vy, -6);      /* 快速下坠 */
+  player.vy = Math.min(player.vy, -6);
+  player.invuln = Math.max(player.invuln, 0.35);   /* 空中斩带护甲，避免"跳=送死" */      /* 快速下坠 */
   player.state = 'attack'; player.t = 0;
   player.atkStage = 2; player.atkDur = 0.34; player.atkP = 0; player.atkDone = false;
   player.atk = { heavy: true, stage: 2, power: 1.15 };
