@@ -30,6 +30,11 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0a0908;color:#f0e6d
 #ko{margin-top:4px;font-size:13px;letter-spacing:3px;opacity:.75}
 #ko b{font-size:26px;color:#fff;letter-spacing:1px;vertical-align:-2px;margin:0 4px;
   font-variant-numeric:tabular-nums}
+#obj{position:fixed;top:44px;right:50%;transform:translateX(50%);z-index:6;
+  font-size:12px;letter-spacing:3px;color:#f0e0bd;text-align:center;
+  text-shadow:0 2px 8px rgba(0,0,0,.85);opacity:.92;transition:opacity .25s}
+#obj.hide{opacity:0}
+#obj b{color:#e8c37a;font-size:15px;margin:0 6px}
 #chapterNo{position:fixed;top:22px;right:50%;transform:translateX(50%);z-index:5;
   font-size:13px;letter-spacing:6px;color:#e8c37a;opacity:.85;text-shadow:0 2px 8px rgba(0,0,0,.8)}
 #timer{position:absolute;top:24px;right:34px;font-size:22px;letter-spacing:2px;
@@ -164,6 +169,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0a0908;color:#f0e6d
     <div id="ko">击破 <b id="koN">0</b></div>
   </div>
   <div id="chapterNo"></div>
+  <div id="obj" class="hide"></div>
   <div id="timer">00:00</div>
   <div id="boss"><div class="nm"></div><div class="bar"><i></i><u></u></div><div id="poiseBar"><i></i><span>架势</span></div></div>
   <div id="pl">
@@ -2285,6 +2291,7 @@ function killEnemy(s, silent) {
   if (s.dead) return;
   s.dead = true; s.state = 'dead'; s.deadT = 0; s.hp = 0;
   player.ko++;
+  objHit(1);
   if (player.leech > 0) player.hp = Math.min(player.maxhp, player.hp + player.leech);
   if (!silent) { SFX.hit(true); }
   burst(_v3.copy(s.pos).setY(1.1), 12, { color: 0x8e1b12, speed: 5, up: 3, life: .7, size: .42, grav: -12 });
@@ -2462,6 +2469,7 @@ function updateVolley(dt) {
 
 function updateEnemies(dt) {
   updateBreakables(dt);
+  updateObjective(dt);
   PRESSURE.step(dt);
   reformFormation(dt);
   updateVolley(dt);
@@ -3189,6 +3197,7 @@ function damagePlayer(dmg, nx, nz, unblockable) {
     popDamage(_v3.copy(player.pos).setY(2.1), '破 防', 'parry');
     SFX.parry();
   }
+  if (G.obj && G.obj.type === 'nohit' && !G.obj.done) objFail();
   player.hp -= dmg;
   player.hurtT = 0.32; player.invuln = 0.8;
   if (player.state !== 'musou') player.musou = clamp(player.musou + 5 * player.musouMul, 0, player.maxMusou);
@@ -3583,6 +3592,94 @@ const UPGRADES = [
 ];
 let pendingUpgrades = [];
 
+/* 战斗外目标（支线）：讨伐令 / 无伤 / 讨敌 */
+const OBJ_DEF = {
+  ko:    { n: '讨 伐 令', sub: '击破', unit: '人' },
+  nohit: { n: '无 伤',    sub: '坚持', unit: '秒' },
+  boss:  { n: '讨 敌',    sub: '击破敌将', unit: '' }
+};
+let objTextCache = '';
+
+function startObjective() {
+  if (G.state !== 'play' || G.obj) return;
+  const types = ['ko', 'nohit'];
+  if (E.some(s => s.active && s.officer && !s.dead)) types.push('boss');
+  const type = types[(Math.random() * types.length) | 0];
+  const dur = type === 'ko' ? 45 : (type === 'nohit' ? 30 : 20);
+  G.obj = { type, t: 0, dur, prog: 0, need: type === 'ko' ? (40 + 10 * (G.chapter - 1)) : 1, done: false };
+  callout(OBJ_DEF[type].n, '支 线');
+  SFX.drum(.9);
+  renderObj(true);
+}
+
+function objHit(n) {
+  const o = G.obj;
+  if (!o || o.done || o.type !== 'ko') return;
+  o.prog += (n || 1);
+  if (o.prog >= o.need) completeObjective();
+}
+
+function objFail() {
+  const o = G.obj;
+  if (!o || o.done) return;
+  o.done = true;
+  callout('支 线 失 败', OBJ_DEF[o.type].n);
+  G.obj = null; G.objCd = 12;
+  renderObj(true);
+}
+
+function completeObjective() {
+  const o = G.obj;
+  if (!o || o.done) return;
+  o.done = true;
+  const d = OBJ_DEF[o.type];
+  if (o.type === 'ko') {
+    player.hp = Math.min(player.maxhp, player.hp + 30);
+    player.musou = clamp(player.musou + 25, 0, player.maxMusou);
+    callout('讨 伐 令 · 达 成', '体力 +30  无双 +25');
+  } else if (o.type === 'nohit') {
+    callout('无 伤 · 达 成', '追 加 一 次 强 化');
+    setTimeout(() => { if (G.state === 'play' && !G.offering) offerUpgrade(); }, 700);
+  } else {
+    player.hp = player.maxhp;
+    player.musou = player.maxMusou;
+    callout('讨 敌 · 达 成', '体力全满  无双全满');
+    setTimeout(() => { if (G.state === 'play' && !G.offering) offerUpgrade(); }, 700);
+  }
+  SFX.gong(); shake(.2, .3);
+  shockRing(player.pos, 5, .5, 0xe8c37a);
+  G.obj = null; G.objCd = 18;
+  renderObj(true);
+}
+
+function updateObjective(dt) {
+  const o = G.obj;
+  if (o && !o.done) {
+    o.t += dt;
+    if (o.type === 'nohit') o.prog = Math.floor(o.t);
+    if (o.t >= o.dur) { if (o.prog >= o.need) completeObjective(); else objFail(); }
+    renderObj(false);
+  } else if (G.state === 'play') {
+    G.objCd = (G.objCd || 0) - dt;
+    if (G.objCd <= 0 && G.time > 8) startObjective();
+  }
+}
+
+function renderObj(force) {
+  const el = document.getElementById('obj');
+  if (!el) return;
+  const o = G.obj;
+  if (!o) { if (force) el.classList.add('hide'); return; }
+  const d = OBJ_DEF[o.type];
+  const left = Math.max(0, Math.ceil(o.dur - o.t));
+  const txt = o.type === 'ko'
+    ? `${d.n} <b>${o.prog}/${o.need}</b> 人 <span class="t">${left}s</span>`
+    : (o.type === 'nohit'
+      ? `${d.n} <b>${o.prog}/${o.dur}</b> 秒 <span class="t">${left}s</span>`
+      : `${d.n} <b>${E.some(s=>s.active&&s.officer&&!s.dead)?'1':'0'}/1</b> <span class="t">${left}s</span>`);
+  if (force || txt !== objTextCache) { objTextCache = txt; el.innerHTML = txt; el.classList.remove('hide'); }
+}
+
 function offerUpgrade() {
   if (G.state !== 'play' || G.offering) return;
   const owned = new Set(player.upgrades);
@@ -3631,7 +3728,8 @@ function resetGame() {
   player.dashT = 0; player.dashCd = 0;
   player.dmgMul = 1; player.atkMul = 1; player.musouMul = 1; player.rangeMul = 1;
   player.poise = player.maxPoise; player.poiseT = 0; player.poiseRegen = 0;
-  player.airY = 0; player.vy = 0; player.airAtk = false; player.pos.y = 0; G.volleyT = 0; G.reformT = 0; PRESSURE.reset();
+  player.airY = 0; player.vy = 0; player.airAtk = false; player.pos.y = 0; G.volleyT = 0; G.reformT = 0; PRESSURE.reset(); G.obj = null; G.objCd = 14; objTextCache = '';
+  const _oe = document.getElementById('obj'); if (_oe) _oe.classList.add('hide');
   player.leech = 0; player.upgrades.length = 0; pendingUpgrades = []; G.offering = false;
   player.lifesteal = 0; player.critOnDodge = 0; player.critNext = 0;
   player.musouLightning = 0; player.heavyMul = 1; player.dashCdMul = 1;
@@ -3987,6 +4085,8 @@ window.__dbg = {
   fx: () => ({ hitStop: +hitStop.toFixed(3), shakeMag: +shakeMag.toFixed(2), shakeT: +shakeT.toFixed(2) }),
   clearFx: () => { hitStop = 0; shakeMag = 0; shakeT = 0; },
   pressure: () => ({ v: +PRESSURE.v.toFixed(2), tier: PRESSURE.tier, spawnMul: +PRESSURE.spawnMul.toFixed(2), volleyMul: +PRESSURE.volleyMul.toFixed(2), skillMul: +PRESSURE.skillMul.toFixed(2) }),
+  objective() { return G.obj ? { type: G.obj.type, prog: G.obj.prog, need: G.obj.need, t: +G.obj.t.toFixed(1), dur: G.obj.dur } : null; },
+  startObjective() { startObjective(); },
   roles() { const r = { front: 0, flank: 0, back: 0, boss: 0 }; for (const s of E) if (s.active && !s.dead && r[s.role] !== undefined) r[s.role]++; return r; },
   volleyWarn: () => ({ level: volleyWarn.level, on: volleyWarn.on, t: +volleyWarn.t.toFixed(2), scale: +volleyWarn.m.scale.x.toFixed(2), x: +volleyWarn.m.position.x.toFixed(1), z: +volleyWarn.m.position.z.toFixed(1) }),
   dash() { tryDash(); },
