@@ -139,6 +139,21 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0a0908;color:#f0e6d
 #title h1{font-size:clamp(44px,8vw,96px);letter-spacing:.16em;font-weight:800;
   color:#f6ead2;text-shadow:0 0 40px rgba(200,50,42,.5),0 6px 0 rgba(0,0,0,.4);line-height:1}
 #title h1 em{font-style:normal;color:#c8322a}
+#metaBox{margin-top:20px;width:min(560px,86vw);padding:12px 16px 14px;
+  background:linear-gradient(165deg,rgba(48,32,20,.72),rgba(12,9,7,.82));
+  border:1px solid rgba(232,195,122,.26);pointer-events:auto}
+#metaBox .mHead{font-size:12px;letter-spacing:5px;color:#e8c37a;opacity:.9}
+#metaBox .mHead b{font-size:17px;margin-left:6px}
+#perkList{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+#perkList .pk{flex:1 1 150px;padding:8px 10px;border:1px solid rgba(232,195,122,.22);
+  background:rgba(0,0,0,.28);cursor:pointer;transition:border-color .15s,background .15s}
+#perkList .pk:hover{border-color:rgba(232,195,122,.7)}
+#perkList .pk.max{opacity:.45;cursor:default}
+#perkList .pk.poor{opacity:.6}
+#perkList .n{font-size:13px;letter-spacing:2px;color:#f0e0bd}
+#perkList .n i{font-style:normal;color:#9fd0ff;font-size:11px;margin-left:4px}
+#perkList .d{font-size:11px;opacity:.66;margin-top:3px}
+#perkList .c{font-size:11px;color:#e8c37a;margin-top:4px;letter-spacing:1px}
 #title .sub{margin-top:14px;font-size:14px;letter-spacing:9px;opacity:.7}
 #title .keys{margin-top:34px;display:grid;grid-template-columns:auto auto;gap:8px 22px;
   font-size:13px;letter-spacing:2px;opacity:.82;text-align:left}
@@ -189,6 +204,10 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0a0908;color:#f0e6d
 <div class="screen" id="title">
   <h1>无双<em>·</em>虎牢关</h1>
   <div class="sub">一 骑 当 千</div>
+  <div id="metaBox">
+    <div class="mHead">将 魂 <b id="valorN">0</b></div>
+    <div id="perkList"></div>
+  </div>
   <div class="keys">
     <b>W A S D</b><span>移动</span>
     <b>鼠标</b><span>转动视角</span>
@@ -2291,6 +2310,7 @@ function killEnemy(s, silent) {
   if (s.dead) return;
   s.dead = true; s.state = 'dead'; s.deadT = 0; s.hp = 0;
   player.ko++;
+  if (player.ko % 10 === 0) addValor(1);
   objHit(1);
   if (player.leech > 0) player.hp = Math.min(player.maxhp, player.hp + player.leech);
   if (!silent) { SFX.hit(true); }
@@ -2344,6 +2364,7 @@ function damageEnemy(s, dmg, dirX, dirZ, heavy) {
   s.pos.z += dirZ * (.14 + w * .4);
   /* 方向性硬直：正 = 前倾（从背后被打），负 = 后仰（正面被打） */
   /* 敌将架势：命中积攒，满 100 可处刑 */
+  if (s.officer && s.hp <= 0) addValor(8);
   if (s.officer) {
     s.poise = Math.min(100, (s.poise || 0) + (heavy ? 15 : 6));
     s.poiseT = 3.0;
@@ -3648,6 +3669,7 @@ function completeObjective() {
   }
   SFX.gong(); shake(.2, .3);
   shockRing(player.pos, 5, .5, 0xe8c37a);
+  addValor(3);
   G.obj = null; G.objCd = 18;
   renderObj(true);
 }
@@ -3847,9 +3869,76 @@ function showResult(win) {
   r.querySelector('.stat').innerHTML =
     `击破 <b>${player.ko}</b> ・ 用时 <b>${String((t / 60) | 0).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}</b><br>` +
     `最高连击 <b>${G.maxCombo || player.combo}</b>` +
-    (player.upgrades.length ? `<br>强化 <b>${player.upgrades.join(' · ')}</b>` : '');
+    (player.upgrades.length ? `<br>强化 <b>${player.upgrades.join(' · ')}</b>` : '') +
+    `<br>将魂 <b>${META.valor}</b>`;
   if (document.pointerLockElement) document.exitPointerLock();
   UI.hud.classList.remove('on');
+}
+
+/* 元成长：将魂 + 永久被动（localStorage 持久化） */
+const META_KEY = 'zs_meta_v1';
+const PERKS = [
+  { id: 'body',  n: '体魄', d: '体力上限 +20',   max: 3, cost: l => 30 + l * 25, apply: () => { player.maxhp += 20; player.hp = player.maxhp; } },
+  { id: 'arm',   n: '武艺', d: '伤害 +8%',       max: 3, cost: l => 35 + l * 30, apply: () => { player.dmgMul *= 1.08; } },
+  { id: 'step',  n: '疾行', d: '闪避冷却 −10%',  max: 2, cost: l => 40 + l * 35, apply: () => { player.dashCdMul *= 0.9; } },
+  { id: 'musou', n: '无双', d: '初始无双 +30',   max: 2, cost: l => 30 + l * 30, apply: () => { player.musou = Math.min(player.maxMusou, player.musou + 30); } }
+];
+let META = { valor: 0, perks: {}, runs: 0, best: 0 };
+try {
+  const raw = JSON.parse(localStorage.getItem(META_KEY) || 'null');
+  if (raw && typeof raw === 'object') META = Object.assign(META, raw, { perks: raw.perks || {} });
+} catch (e) { /* 隐私模式忽略 */ }
+
+function saveMeta() { try { localStorage.setItem(META_KEY, JSON.stringify(META)); } catch (e) {} }
+
+function addValor(n) {
+  if (!(n > 0)) return;
+  META.valor += Math.round(n);
+  if (META.valor > 99999) META.valor = 99999;
+  renderMeta();
+}
+
+function buyPerk(id) {
+  const p = PERKS.find(x => x.id === id);
+  if (!p) return;
+  const lv = META.perks[id] || 0;
+  if (lv >= p.max) return;
+  const c = p.cost(lv);
+  if (META.valor < c) return;
+  META.valor -= c;
+  META.perks[id] = lv + 1;
+  saveMeta(); renderMeta();
+  SFX.gong();
+}
+
+function renderMeta() {
+  const box = document.getElementById('metaBox');
+  if (!box) return;
+  const vn = document.getElementById('valorN');
+  if (vn) vn.textContent = META.valor;
+  const list = document.getElementById('perkList');
+  if (!list) return;
+  list.innerHTML = '';
+  for (const p of PERKS) {
+    const lv = META.perks[p.id] || 0;
+    const maxed = lv >= p.max;
+    const cost = maxed ? 0 : p.cost(lv);
+    const poor = !maxed && META.valor < cost;
+    const el = document.createElement('div');
+    el.className = 'pk' + (maxed ? ' max' : (poor ? ' poor' : ''));
+    el.innerHTML = `<div class="n">${p.n}<i>${lv}/${p.max}</i></div>` +
+      `<div class="d">${p.d}</div>` +
+      `<div class="c">${maxed ? '已 解 锁' : '将魂 ' + cost}</div>`;
+    if (!maxed) el.addEventListener('click', ev => { ev.stopPropagation(); buyPerk(p.id); });
+    list.appendChild(el);
+  }
+}
+
+function applyMetaPerks() {
+  for (const p of PERKS) {
+    const lv = META.perks[p.id] || 0;
+    for (let i = 0; i < lv; i++) p.apply();
+  }
 }
 
 function startGame() {
@@ -3858,9 +3947,16 @@ function startGame() {
   $('#result').classList.add('hide');
   G.state = 'play';
   resetGame();
+  applyMetaPerks();
+  META.runs++;
+  saveMeta();
   lockPointer();
 }
-$('#title').addEventListener('click', startGame);
+$('#title').addEventListener('click', (e) => {
+  if (e.target.closest && e.target.closest('#metaBox')) return;   /* 点强化不解锁开始 */
+  startGame();
+});
+renderMeta();
 $('#result').addEventListener('click', () => {
   const win = G.state === 'result' && G.ended && player.hp > 0;
   $('#result').classList.add('hide');
@@ -4087,6 +4183,10 @@ window.__dbg = {
   pressure: () => ({ v: +PRESSURE.v.toFixed(2), tier: PRESSURE.tier, spawnMul: +PRESSURE.spawnMul.toFixed(2), volleyMul: +PRESSURE.volleyMul.toFixed(2), skillMul: +PRESSURE.skillMul.toFixed(2) }),
   objective() { return G.obj ? { type: G.obj.type, prog: G.obj.prog, need: G.obj.need, t: +G.obj.t.toFixed(1), dur: G.obj.dur } : null; },
   startObjective() { startObjective(); },
+  meta: () => ({ valor: META.valor, perks: Object.assign({}, META.perks), runs: META.runs }),
+  addValor(n) { addValor(n); },
+  buyPerk(id) { buyPerk(id); },
+  resetMeta() { META = { valor: 0, perks: {}, runs: 0, best: 0 }; saveMeta(); renderMeta(); },
   roles() { const r = { front: 0, flank: 0, back: 0, boss: 0 }; for (const s of E) if (s.active && !s.dead && r[s.role] !== undefined) r[s.role]++; return r; },
   volleyWarn: () => ({ level: volleyWarn.level, on: volleyWarn.on, t: +volleyWarn.t.toFixed(2), scale: +volleyWarn.m.scale.x.toFixed(2), x: +volleyWarn.m.position.x.toFixed(1), z: +volleyWarn.m.position.z.toFixed(1) }),
   dash() { tryDash(); },
