@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""照片级渲染验收（P1–P14）：独立跑旧 18 条 + 新 14 条。
+"""照片级渲染验收（P1–P15）：独立跑旧 18 条 + 新 15 条。
 
 来源：demos/index.html 末尾的 PHOTO_VERIFY_PY 注释块（为遵守「单文件」约束，
 验收器被内嵌在产物里）。本文件是该块的逐字提取，仅加此说明头，便于直接执行：
@@ -262,9 +262,34 @@ with sync_playwright() as playwright:
           {"captured": sorted(shots), "metrics": metrics},
           "5 张截图齐全；地面高通自相关峰值 < 0.15（无可见平铺）、边缘密度 > 0.8、ROI 标准差 > 6（非空白）")
     check("P14 browser errors", len(all_errors) == 0, all_errors, "0 JS runtime errors / 0 console errors")
+
+    # P15 单位残余穿插：密集人群中身体不应明显重叠（分离求解是否收敛）
+    crowd = page.evaluate("""() => {
+      const d = __dbg, p = d.player;
+      const keep = d.E.map(e => ({e, active: e.active, dead: e.dead, x: +e.pos.x.toFixed(3), z: +e.pos.z.toFixed(3)}));
+      d.G.target = 0;
+      d.E.forEach(e => { e.active = false; e.dead = true; });
+      p.pos.set(0, 0, 0); p.hp = p.maxhp; p.dead = false; p.hurtT = 0; p.invuln = 999;
+      const n = Math.min(120, 60 + 60);
+      d.spawn(n);
+      d.step(1 / 60, 60 * 6);
+      const l = d.E.filter(e => e.active && !e.dead);
+      let over5 = 0, over10 = 0, worst = 0, pairs = 0;
+      for (let i = 0; i < l.length; i++) for (let j = i + 1; j < l.length; j++) {
+        const a = l[i], b = l[j];
+        const ov = (a.scale + b.scale) * 0.52 - Math.hypot(b.pos.x - a.pos.x, b.pos.z - a.pos.z);
+        if (ov > 0.001) { pairs++; if (ov > 0.05) over5++; if (ov > 0.10) over10++; if (ov > worst) worst = ov; }
+      }
+      const out = { units: l.length, pairs, over5, over10, worst: +worst.toFixed(3) };
+      d.E.forEach((e, i) => { e.active = keep[i].active; e.dead = keep[i].dead; e.pos.x = keep[i].x; e.pos.z = keep[i].z; });
+      p.invuln = 0;
+      return out;
+    }""")
+    check("P15 密集人群残余穿插", crowd["over10"] == 0 and crowd["worst"] <= 0.10 and crowd["units"] >= 100,
+          crowd, ">= 100 人同屏；>10cm 重叠 0 对、最深 <= 0.10 m")
     browser.close()
 Page.screenshot = old_screenshot
-print("PHOTO_RESULT " + str(sum(photo)) + "/14; LEGACY_RESULT " + str(sum(ok for _, ok, _ in legacy.results)) + "/" + str(len(legacy.results)), flush=True)
+print("PHOTO_RESULT " + str(sum(photo)) + "/" + str(len(photo)) + "; LEGACY_RESULT " + str(sum(ok for _, ok, _ in legacy.results)) + "/" + str(len(legacy.results)), flush=True)
 if legacy_exit or not all(photo):
     sys.exit(1)
 
