@@ -4525,7 +4525,7 @@ Page.screenshot = screenshot_in_memory
 # Run all original assertions before the photo assertions. Capture only its final exit status.
 legacy_exit = []
 class LegacySys:
-    argv = [str(ROOT / "scripts/verify.py")]
+    argv = [str(ROOT / "scripts/verify.py")] + _sys.argv[_sys.argv.index("--url") + 1:] if "--url" in _sys.argv else [str(ROOT / "scripts/verify.py")]
     def exit(self, code):
         legacy_exit.append(code)
 legacy.sys = LegacySys()
@@ -4571,7 +4571,8 @@ with sync_playwright() as playwright:
     page = browser.new_page(viewport={"width": 1440, "height": 810})
     page.on("pageerror", lambda error: all_errors.append(str(error)))
     page.on("console", lambda message: all_errors.append(message.text) if message.type == "error" else None)
-    page.goto((ROOT / "demos/index.html").as_uri(), wait_until="load")
+    target = sys.argv[sys.argv.index("--url") + 1] if "--url" in sys.argv else (ROOT / "demos/index.html").as_uri()
+    page.goto(target, wait_until="load")
     page.wait_for_function("window.__ready===true", timeout=45000)
     page.evaluate("__dbg.start()")
     page.wait_for_timeout(3500)
