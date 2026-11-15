@@ -2323,6 +2323,7 @@ function damageEnemy(s, dmg, dirX, dirZ, heavy) {
     }
   }
   s.hp -= dmg; s.flash = 1;
+  if (player.lifesteal > 0) player.hp = Math.min(player.maxhp, player.hp + player.lifesteal);
   const p = _v3.copy(s.pos); p.y = 1.25;
   popDamage(p, Math.round(dmg), w >= .85 ? 'crit' : '');
   burst(p, Math.round(3 + w * 8), {
@@ -2738,7 +2739,8 @@ const player = {
   poise: 2, maxPoise: 2, poiseT: 0,
   atk: null, lock: null, airY: 0, vy: 0, airAtk: false, jumps: 0,
   /* 局内成长（每 25 击破三选一） */
-  dmgMul: 1, atkMul: 1, musouMul: 1, rangeMul: 1, leech: 0, upgrades: []
+  dmgMul: 1, atkMul: 1, musouMul: 1, rangeMul: 1, leech: 0, upgrades: [],
+  lifesteal: 0, critOnDodge: 0, critNext: 0, musouLightning: 0, heavyMul: 1, dashCdMul: 1
 };
 
 const PM = {
@@ -3069,7 +3071,10 @@ function resolvePlayerHit(atk) {
   const stage = atk.stage;
   const range = (heavy ? 4.3 : (stage === 2 ? 3.9 : 3.6)) * player.rangeMul;
   const halfArc = heavy ? 1.75 : (stage === 2 ? 1.15 : 1.35);
-  const dmg = (heavy ? 62 : [20, 22, 34][stage] || 20) * (atk.power || 1) * player.dmgMul;
+  let dmg = (heavy ? 62 : [20, 22, 34][stage] || 20) * (atk.power || 1) * player.dmgMul;
+  const crit = player.critNext > 0;
+  if (crit) { dmg *= 2; player.critNext = 0; }
+  const thunder = player.musouLightning > 0 && player.state === 'musou';
   const px = player.pos.x, pz = player.pos.z;
   let hits = 0;
 
@@ -3082,6 +3087,15 @@ function resolvePlayerHit(atk) {
     const nx = dx / (d || 1), nz = dz / (d || 1);
     damageEnemy(s, dmg * rand(.92, 1.08) * (s.airborne ? 1.4 : 1), nx, nz, atk.weight ?? (heavy ? 1 : 0.5));
     if (atk.launch && !s.dead) launchEnemy(s, 1);
+    /* 雷刃：无双期间命中时对周围溅射 */
+    if (thunder) {
+      for (const o of E) {
+        if (o === s || !o.active || o.dead) continue;
+        const lx = o.pos.x - s.pos.x, lz = o.pos.z - s.pos.z, ld = Math.hypot(lx, lz);
+        if (ld < 3.2) damageEnemy(o, dmg * .35, lx / (ld || 1), lz / (ld || 1), 0.45);
+      }
+      burst(_v3.copy(s.pos).setY(1.4), 4, { color: 0x9fd0ff, speed: 7, up: 3, life: .25, size: .28, grav: -4 });
+    }
     for (const b of BREAKABLES) {
       if (!b.alive) continue;
       const bx = b.x - px, bz = b.z - pz, bd = Math.hypot(bx, bz);
@@ -3109,6 +3123,7 @@ function damagePlayer(dmg, nx, nz, unblockable) {
     player.musou = clamp(player.musou + 8 * player.musouMul, 0, player.maxMusou);
     player.invuln = Math.max(player.invuln, 0.30);
     player.dashCd = 0;
+    if (player.critOnDodge) player.critNext = 1;
     G.slow = Math.max(G.slow, 0.40);
     hitStop = Math.max(hitStop, 0.10);
     shake(.16, .14);
@@ -3364,7 +3379,7 @@ function launchEnemy(s, power = 1) {
 function releaseHeavy() {
   if (G.state !== 'play' || player.dead) return;
   if (player.state !== 'idle' && player.state !== 'run') { player.charging = false; return; }
-  const pw = 0.65 + clamp(player.chargeT / 1.15, 0, 1) * 0.85;
+  const pw = (0.65 + clamp(player.chargeT / 1.15, 0, 1) * 0.85) * (player.heavyMul || 1);
   aimAssist(5.2, 0.45);
   startAttack(0, 0.60, true);
   player.atk.power = pw;
@@ -3375,7 +3390,7 @@ function releaseHeavy() {
 }
 function tryDash() {
   if (player.dashCd > 0 || player.dead || player.state === 'attack' || player.hurtT > 0) return;
-  player.dashT = 0.22; player.dashCd = 0.55;
+  player.dashT = 0.22; player.dashCd = 0.55 * (player.dashCdMul || 1);
   SFX.dash();
   burst(_v3.copy(player.pos).setY(.2), 8, { color: 0xbfae8e, speed: 3, up: 1.2, life: .5, size: .6, grav: -2, drag: 3 });
 }
@@ -3554,12 +3569,17 @@ function updateHUD(dt) {
 const G = { state: 'menu', chapter: 1, hpMul: 1, dmgMul: 1, time: 0, target: 60, spawnT: 0, boss: null, boss2Spawned: false, boss2Up: false, slow: 0, ended: false };
 
 const UPGRADES = [
-  { id: 'edge',  n: '烈刃', d: '造成的伤害 +18%',        apply: () => { player.dmgMul *= 1.18; } },
-  { id: 'haste', n: '疾风', d: '出招速度 +12%',          apply: () => { player.atkMul *= 0.88; } },
-  { id: 'valor', n: '龙胆', d: '无双槽获取 +25%',        apply: () => { player.musouMul *= 1.25; } },
-  { id: 'sweep', n: '横扫', d: '攻击范围 +15%',          apply: () => { player.rangeMul *= 1.15; } },
-  { id: 'iron',  n: '铁壁', d: '体力上限 +25 并回满',    apply: () => { player.maxhp += 25; player.hp = player.maxhp; } },
-  { id: 'leech', n: '嗜血', d: '每次击破回复 1.5 体力',  apply: () => { player.leech += 1.5; } }
+  /* 数值向 */
+  { id: 'edge',  n: '烈刃', d: '造成的伤害 +18%',              apply: () => { player.dmgMul *= 1.18; } },
+  { id: 'sweep', n: '横扫', d: '攻击范围 +15%',                apply: () => { player.rangeMul *= 1.15; } },
+  { id: 'iron',  n: '铁壁', d: '体力上限 +25 并回满',          apply: () => { player.maxhp += 25; player.hp = player.maxhp; } },
+  { id: 'valor', n: '龙胆', d: '无双槽获取 +25%',              apply: () => { player.musouMul *= 1.25; } },
+  /* 定性向：改变打法而非数字 */
+  { id: 'vamp',  n: '饮血', d: '命中回复 0.8 体力（续航流）',  apply: () => { player.lifesteal += 0.8; } },
+  { id: 'riposte', n: '闪反', d: '完美闪避后下一击必定暴击 ×2', apply: () => { player.critOnDodge = 1; } },
+  { id: 'thunder', n: '雷刃', d: '无双期间攻击附带雷电（范围）', apply: () => { player.musouLightning = 1; } },
+  { id: 'breaker', n: '破军', d: '重击伤害 +60%，但出招 −20%',  apply: () => { player.heavyMul *= 1.6; player.atkMul *= 1.2; } },
+  { id: 'wind',  n: '疾风步', d: '闪避冷却 −40%（机动流）',    apply: () => { player.dashCdMul *= 0.6; } }
 ];
 let pendingUpgrades = [];
 
@@ -3613,6 +3633,8 @@ function resetGame() {
   player.poise = player.maxPoise; player.poiseT = 0; player.poiseRegen = 0;
   player.airY = 0; player.vy = 0; player.airAtk = false; player.pos.y = 0; G.volleyT = 0; G.reformT = 0; PRESSURE.reset();
   player.leech = 0; player.upgrades.length = 0; pendingUpgrades = []; G.offering = false;
+  player.lifesteal = 0; player.critOnDodge = 0; player.critNext = 0;
+  player.musouLightning = 0; player.heavyMul = 1; player.dashCdMul = 1;
   $('#upgrade').classList.add('hide');
   camYaw = 0; camPitch = 0.20;
   G.time = 0; G.boss = null; G.boss2Spawned = false; G.boss2Up = false; G.ended = false; G.slow = 0; G.spawnT = 0; G.lastKm = 0;
