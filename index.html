@@ -1301,7 +1301,37 @@ function updateBreakables(dt) {
   }
 }
 
-/* 战场杂物：碎石 / 枯草 / 断枪 / 破盾 / 木箱（全部静态实例化） */
+/* 风：散布道具的 GPU 顶点摆动（零 CPU 开销；旗面/尘粒另有动画） */
+const WIND_T = { value: 0 };
+function addWind(mat, amp, freq) {
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uWindTime = WIND_T;
+    shader.uniforms.uWindAmp = { value: amp };
+    shader.uniforms.uWindFreq = { value: freq };
+    shader.vertexShader = 'uniform float uWindTime;\nuniform float uWindAmp;\nuniform float uWindFreq;\n' + shader.vertexShader;
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+       {
+         #ifdef USE_INSTANCING
+           vec3 wOrigin = instanceMatrix[3].xyz;
+         #else
+           vec3 wOrigin = vec3(0.0);
+         #endif
+         float wPhase = uWindTime * 1.6 + wOrigin.x * 0.33 + wOrigin.z * 0.21;
+         float wGust = 0.65 + 0.35 * sin(uWindTime * 0.41 + wOrigin.x * 0.02);
+         float wH = clamp(transformed.y * 1.5, 0.0, 1.0);
+         transformed.x += sin(wPhase) * uWindAmp * wH * wGust * uWindFreq;
+         transformed.z += cos(wPhase * 0.83) * uWindAmp * 0.45 * wH * wGust * uWindFreq;
+       }`
+    );
+  };
+  mat.customProgramCacheKey = () => 'wind' + amp.toFixed(3) + '_' + freq.toFixed(2);
+  mat.needsUpdate = true;
+  return mat;
+}
+
+/* 战场杂物：碎石 / 枯草 / 断枪 / 破盾 / 木箱（实例化 + 顶点风） */
 {
   const dummy = new THREE.Object3D();
   const place = (mesh, n, fn) => {
@@ -1334,7 +1364,7 @@ function updateBreakables(dt) {
   // 枯草
   {
     const g = new THREE.ConeGeometry(0.13, 0.55, 4, 1);
-    const m = new THREE.MeshStandardMaterial({ color: 0x7d7444, roughness: 1 });
+    const m = addWind(new THREE.MeshStandardMaterial({ color: 0x7d7444, roughness: 1 }), 0.11, 1.0);
     const im = new THREE.InstancedMesh(g, m, 240);
     place(im, 960, (d, x, z) => {
       const sc = rand(.6, 1.7);
@@ -1346,7 +1376,7 @@ function updateBreakables(dt) {
   // 断枪 / 折戟插在地上
   {
     const g = new THREE.CylinderGeometry(0.022, 0.026, 1.5, 5);
-    const m = new THREE.MeshStandardMaterial({ color: 0x4a3626, roughness: .9 });
+    const m = addWind(new THREE.MeshStandardMaterial({ color: 0x4a3626, roughness: .9 }), 0.05, .8);
     const im = new THREE.InstancedMesh(g, m, 70);
     place(im, 280, (d, x, z) => {
       const sc = rand(.6, 1.15);
@@ -1358,7 +1388,7 @@ function updateBreakables(dt) {
   // 破盾（半埋在土里）
   {
     const g = new THREE.CylinderGeometry(0.36, 0.36, 0.07, 10);
-    const m = new THREE.MeshStandardMaterial({ color: 0x5e4a32, roughness: .85, metalness: .15 });
+    const m = addWind(new THREE.MeshStandardMaterial({ color: 0x5e4a32, roughness: .85, metalness: .15 }), 0.018, .6);
     const im = new THREE.InstancedMesh(g, m, 40);
     place(im, 160, (d, x, z) => {
       const sc = rand(.8, 1.2);
@@ -1370,7 +1400,7 @@ function updateBreakables(dt) {
   // 木箱 / 辎重
   {
     const g = new THREE.BoxGeometry(0.75, 0.62, 0.75);
-    const m = new THREE.MeshStandardMaterial({ color: 0x6a4f33, roughness: .92 });
+    const m = addWind(new THREE.MeshStandardMaterial({ color: 0x6a4f33, roughness: .92 }), 0.012, .5);
     const im = new THREE.InstancedMesh(g, m, 46);
     place(im, 184, (d, x, z) => {
       const sc = rand(.75, 1.3);
@@ -2500,6 +2530,7 @@ function updateVolley(dt) {
 
 function updateEnemies(dt) {
   updateBreakables(dt);
+  WIND_T.value += dt;
   updateObjective(dt);
   PRESSURE.step(dt);
   reformFormation(dt);
