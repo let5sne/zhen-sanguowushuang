@@ -252,6 +252,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
 import { Pass, FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
@@ -424,6 +425,15 @@ const FinalShader = {
 const gradePass = new ShaderPass(FinalShader);
 gradePass.renderToScreen = true;
 composer.addPass(gradePass);
+/* FXAA：后期管线不享受 renderer antialias（场景渲进 RenderTarget），
+   所以在最终 sRGB 图像上补一道全屏抗锯齿，专门收山脊/飞檐/刀光的锯齿。 */
+const fxaaPass = new ShaderPass(FXAAShader);
+composer.addPass(fxaaPass);
+function updateFxaaResolution() {
+  fxaaPass.material.uniforms['resolution'].value.set(
+    1 / Math.max(1, composer.renderTarget1.width), 1 / Math.max(1, composer.renderTarget1.height));
+}
+updateFxaaResolution();
 composer.setPixelRatio(PR);
 composer.setSize(innerWidth, innerHeight);
 /* 环境光照（程序化 IBL，让金属不黑） */
@@ -4079,6 +4089,7 @@ function applyQuality() {
   const pr = Math.min(window.devicePixelRatio || 1, 1.5) * quality;
   renderer.setPixelRatio(pr); composer.setPixelRatio(pr);
   renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight);
+  updateFxaaResolution();
   atmosphere.samples = LOWQ ? 4 : (quality < .7 ? 4 : 8);
   atmosphere.volumetrics = !LOWQ && quality >= .7;
   dustGeo.setDrawRange(0, Math.floor(DUST_N * quality * (LOWQ ? .5 : 1)));

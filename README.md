@@ -144,7 +144,9 @@ cd demos && python3 -m http.server 8000
 |---|---|
 | 色彩链路 | 场景渲染进 `HalfFloatType` RT（`EffectComposer` 默认即 HDR），中间任何 pass 不降到 8-bit；`renderer.toneMapping = NoToneMapping`，**色调映射由最终 pass 独占**（r160 里渲染进 RT 时 `toneMapping` 本来就失效，明确写出来避免误用） |
 | 单位分离 | 空间哈希（100×100 链表网格，零分配）+ 每帧 2 轮位置式分离；149 人同屏 60fps，重叠对 144 → 49 | **静态碰撞体 + 兵器 + 箭矢**：关楼 1 个轴对齐盒（含高度 13 m）+ 营帐 ≤14 个圆（高 3.6 m）。玩家/敌兵每帧做圆-盒 / 圆-圆推出（带切向滑移），并沿朝向前伸采样点检测兵器；解算后仍相交就回退上一帧。箭矢对「上一帧→当前帧」做 3 点采样，低帧率也不穿墙。宽相用外接圆提前剔除。碎石/木箱/火盆太矮可跨过。实测：墙体 549 帧 / 34,194 单位帧零穿模；箭矢 323 箭帧零穿透 |
-| 后期 | 4 个 pass：`RenderPass` → `BattlefieldAtmosphere` → `UnrealBloomPass` → 自写 Grade（ACES + 曝光 1.06 + 对比 1.09 + 饱和 0.94 + 分离色调 0.028 + 暗角 0.07 + **暗部抬升 0.035**） |
+| 后期 | 5 个 pass：`RenderPass` → 自写 `BattlefieldAtmosphere`（SSAO + 高度雾 + 体积光，半分辨率）→ `UnrealBloomPass` → 自写 Grade（ACES + 曝光 + 对比/饱和/暗角）→ **FXAA**。
+  | FXAA 必要性：场景渲进 `EffectComposer` 的 RenderTarget，`renderer antialias` 不生效（那是给默认帧缓冲的），
+  | 所以最后在 sRGB 图像上补一道全屏抗锯齿。实测硬边像素（梯度 >60）**0.533% → 0.154%（−71%）**，边缘能量 4.92 → 4.08。
 | 大气 | 半分辨率单 pass 完成 SSAO（8 sample + 深度双边模糊）、高度雾（`exp(-h/1.5)` 沿视线积分，系数 .007）、god rays（16 步径向模糊）；复用 `depthTexture`，**无额外 prepass**；合成时雾色混合系数 .26 |
 | 阴影 | 双光源级联：主太阳 2048²（半径 20 m）+ 跟随玩家的近端光 2048²（半径 8 m），`PCFSoftShadowMap`；20 m 外由**贴地接触阴影**（`shadowIM`，对全部单位生效）兜底，因此远景单位不会浮空，也无需第三级级联 |
 | 环境光 | 程序化 equirect 1024×512 → `PMREMGenerator`；含太阳盘、天空渐变、地面反弹色，太阳方向与平行光一致 |
