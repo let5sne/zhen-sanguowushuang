@@ -2530,6 +2530,9 @@ function updateVolley(dt) {
   } else G.volleyT = 0.9;
 }
 
+/* 注：曾实现"AI 距离分档"（>18m 降到 20Hz、>35m 10Hz、>60m 5Hz），实测
+   40 近 + 60 远场景逻辑耗时 0.489 → 0.477 ms/帧（2.5%，噪声内），近战掉血 47 → 43（9%）。
+   真正的成本在 separateUnits / rebuildGrid / 动画矩阵写入，与 AI 频率无关，故回退。 */
 function updateEnemies(dt) {
   updateBreakables(dt);
   WIND_T.value += dt;
@@ -2555,6 +2558,7 @@ function updateEnemies(dt) {
     const dx = px - s.pos.x, dz = pz - s.pos.z;
     const dist = Math.hypot(dx, dz) || 0.0001;
     const nx = dx / dist, nz = dz / dist;
+
 
     s.cool -= dt;
     s.t += dt;
