@@ -2567,7 +2567,10 @@ function updateEnemies(dt) {
 
     /* 敌将技能：独立状态，带明显前摇 */
     if (s.state === 'skill') {
-      const wind = 0.85, active = s.skillKind === 'charge' ? 0.45 : 0.18, rec = 0.75;
+      const SK = s.skillKind === 'whirl' ? { wind: .80, active: 1.20, rec: .70 }
+        : s.skillKind === 'charge' ? { wind: .85, active: .45, rec: .75 }
+        : { wind: .85, active: .18, rec: .75 };
+      const wind = SK.wind, active = SK.active, rec = SK.rec;
       if (s.t < wind) {
         s.atkP = s.t / wind;
         s.yaw = angTo(s.yaw, Math.atan2(nx, nz), dt * 3);
@@ -2590,12 +2593,33 @@ function updateEnemies(dt) {
             if (pd < 6.0 && Math.abs(angDiff(Math.atan2(player.pos.x - s.pos.x, player.pos.z - s.pos.z), s.yaw)) < 1.9) {
               damagePlayer(22, (player.pos.x - s.pos.x) / (pd || 1), (player.pos.z - s.pos.z) / (pd || 1));
             }
+          } else if (s.skillKind === 'whirl') {
+            /* 旋风斩：3 段范围伤害，无方向性，逼玩家拉开距离 */
+            SFX.swing(true); SFX.gong();
+            shockRing(s.pos, 4.6, .55, 0xff8a4a);
+            s.whirlTicks = 0;
+            s.whirlAcc = 0;
           } else {
             SFX.dash(); SFX.thud();
             shockRing(s.pos, 5.2, .5, 0xffa050);
             shake(.5, .35);
             const pd2 = Math.hypot(player.pos.x - s.pos.x, player.pos.z - s.pos.z);
             if (pd2 < 5.2) damagePlayer(26, (player.pos.x - s.pos.x) / (pd2 || 1), (player.pos.z - s.pos.z) / (pd2 || 1));
+          }
+        }
+        if (s.skillKind === 'whirl') {
+          /* 旋风：快速自转 + 每 0.4 s 一段范围伤害（共 3 段） */
+          s.yaw += dt * 16;
+          s.whirlAcc += dt;
+          while (s.whirlAcc >= 0.38 && s.whirlTicks < 3) {
+            s.whirlAcc -= 0.38; s.whirlTicks++;
+            const pdw = Math.hypot(player.pos.x - s.pos.x, player.pos.z - s.pos.z);
+            if (pdw < 4.6) {
+              /* 每段独立结算：无敌帧压到 0.12s，三段都能命中（共 36）；
+                 旋风可格挡（不是红色大招），逼玩家拉开距离而非硬格 */
+              damagePlayer(12, (player.pos.x - s.pos.x) / (pdw || 1), (player.pos.z - s.pos.z) / (pdw || 1), false, 0.12);
+            }
+            burst(_v3.copy(s.pos).setY(1.0), 8, { color: 0xffb060, speed: 7, up: 1.5, life: .3, size: .35, grav: -6 });
           }
         }
         if (s.skillKind === 'charge') {
@@ -2682,9 +2706,12 @@ function updateEnemies(dt) {
         /* 前排：正面直推 */
         if (dist > s.range * .82) { mvx = nx; mvz = nz; }
         else if (s.officer && s.skillCd <= 0 && dist < 7.5) {
-          s.state = 'skill'; s.t = 0; s.atkP = 0; s.skillDone = false;
+          /* 吕布在「冲锋 / 旋风斩」之间随机；华雄固定横扫 */
+          s.skillKind = s.name === '吕布' ? (Math.random() < .5 ? 'charge' : 'whirl') : 'sweep';
+          s.skillDone = false; s.whirlTicks = 0; s.whirlAcc = 0;
+          s.state = 'skill'; s.t = 0; s.atkP = 0;
           s.cool = 1.2;
-          callout(s.name, s.skillKind === 'charge' ? '突 击' : '横 扫');
+          callout(s.name, s.skillKind === 'charge' ? '突 击' : (s.skillKind === 'whirl' ? '旋 风 斩' : '横 扫'));
           SFX.gong();
           continue;
         }
@@ -3214,7 +3241,7 @@ function resolvePlayerHit(atk) {
 }
 
 /* ---------------- 玩家受击 / 无双 ---------------- */
-function damagePlayer(dmg, nx, nz, unblockable) {
+function damagePlayer(dmg, nx, nz, unblockable, invulnT) {
   if (player.invuln > 0 || player.dead || player.state === 'musou') return;
   if (player.airY > 0.02) dmg *= 0.5;   /* 浮空时更难被打中 */
   /* 完美闪避：闪避前 0.14 s 内被击中 → 无伤 + 子弹时间 + 返还 CD */
@@ -3290,7 +3317,7 @@ function damagePlayer(dmg, nx, nz, unblockable) {
   }
   if (G.obj && G.obj.type === 'nohit' && !G.obj.done) objFail();
   player.hp -= dmg;
-  player.hurtT = 0.32; player.invuln = 0.8;
+  player.hurtT = 0.32; player.invuln = invulnT || 0.8;
   if (player.state !== 'musou') player.musou = clamp(player.musou + 5 * player.musouMul, 0, player.maxMusou);
   player.combo = 0;
   SFX.hurt();
@@ -3909,6 +3936,7 @@ function spawnOfficer(name, hp, scale, tint) {
   s.range = TYPES.officer.range; s.reach = TYPES.officer.reach;
   /* 敌将专属技能：华雄横扫 / 吕布冲锋 */
   s.skillKind = name === '吕布' ? 'charge' : 'sweep';
+  s.whirlTicks = 0; s.whirlAcc = 0;
   s.skillCd = rand(3.5, 5.5);
   G.boss = s;
   SFX.officer();
