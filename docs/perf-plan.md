@@ -14,7 +14,11 @@
 | ├ 游戏逻辑（不含渲染） | 1.99 ms | 单独计时 `__dbg.step` |
 | └ 渲染提交（含 composer） | 3.88 ms | `composer.render()` + `gl.finish()` |
 | 任务耗时（main thread） | 6.68 ms/帧 | CDP `TaskDuration` |
-| 分配速率 | **≈19.4 KB/帧**（≈1.2 MB/s） | 堆增长 / 帧数 |
+| 分配速率 | **≈1.6 KB/帧**（实测 1478–1795 B/帧） | CDP `HeapProfiler.startSampling` |
+
+> **更正**：本文早期版本写「19.4 KB/帧」，那是用 `performance.memory` 堆增量估的，被量化误差放大约一个数量级。
+> 可靠方法是 CDP 堆采样（`HeapProfiler.startSampling` + `samplingInterval: 1024`），实测约 **1.5–1.8 KB/帧**。
+> 因此「内存分配优化」的实际权重远低于最初判断。
 | 堆占用 | 27–30 MB（长跑稳定） | `performance.memory` |
 | draw call | ~200（128 人） | `renderer.info.render.calls` |
 | 帧预算占用 | 6.7 / 16.7 ms = **40%** | 计算 |
@@ -132,11 +136,27 @@ GC 停顿。1.2 MB/s 的分配速率下，128 人时约每 2–4 s 触发一次 
 
 ---
 
+### 分配热点实测（CDP 堆采样归因，128 人）
+
+| 占比 | 函数 | 归属 |
+|---|---|---|
+| 13.3% | `setValueV3f` (three:18400) | three 内部（uniform 上传） |
+| 11.2% | `setValueM4` (three:18525) | three 内部 |
+| 10.2% | `separateUnits` (index:2778) | **本项目** |
+| 9.2% | `multiplyMatrices` (three:6224) | three 内部 |
+| 8.2% | `cloneUniforms` (three:12163) | three 内部 |
+| 5.1% | `setProgram` (three:30131) | three 内部 |
+| 4.1% | `updateEnemyRigs` (index:2206) | **本项目** |
+| 4.1% | `updateEnemies` (index:2533) | **本项目** |
+
+**本项目只占约 18%，其余 60%+ 是 three 内部的 uniform/矩阵上传**——这部分靠改业务代码动不了。
+`separateUnits` 是本项目最大的单点（10.2%），但它是位置式分离，难以去分配（可改成"输出写入目标数组"而非新建对象）。
+
 ## 4. 排序：按「预期收益 ÷ 实施成本」
 
 | 排名 | 项 | 预期收益 | 成本 | 风险 | 建议 |
 |---|---|---|---|---|---|
-| **1** | **C1 + C2 + C5** HUD/飘字/文本去分配 | 中（省 4–7 KB/帧，GC 频率降约 30%） | **低** | 无 | **立即做** |
+| **1** | **C1 + C2 + C5** HUD/飘字/文本去分配 | 低（实测改动前后 1478 → 1795 B/帧，在噪声内）| **低** | 无 | 已做，收益≈0，但消除每帧 `innerHTML` 解析是净收益 |
 | **2** | **A1** AI 距离分档 | **高**（远场 AI 省 60–80%） | 中 | 中 | **建议做** |
 | **3** | **C4** 热路径去 `new` | 中（先采样再改） | 低 | 无 | **做（先采样）** |
 | **4** | **A2** 远场群体代理 | 高（>35 m 省分离+碰撞） | 中 | 中 | 与 A1 一起做 |

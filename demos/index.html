@@ -1930,9 +1930,11 @@ const _v = new THREE.Vector3();
 function popDamage(pos, val, cls = '') {
   const d = DMG_POOL[dmgHead]; dmgHead = (dmgHead + 1) % DMG_POOL.length;
   d.on = true; d.t = 0; d.dur = .85; d.pos.copy(pos); d.pos.y += 1.6; d.vy = 1.6;
-  d.el.style.display = 'block'; d.el.textContent = val;
-  d.el.className = 'dn ' + cls;
-  d.el.style.opacity = '1';
+  if (d.el.style.display !== 'block') d.el.style.display = 'block';
+  if (d.lastVal !== val) { d.lastVal = val; d.el.textContent = String(val); }
+  const cn = cls ? 'dn ' + cls : 'dn';
+  if (d.lastCls !== cn) { d.lastCls = cn; d.el.className = cn; }
+  if (d.lastOp !== '1') { d.lastOp = '1'; d.el.style.opacity = '1'; }
 }
 function updateDamage(dt) {
   for (const d of DMG_POOL) {
@@ -3599,7 +3601,10 @@ const UI = {
   musou: $('#musou'), musouF: $('#musouF'), combo: $('#combo'), comboN: $('#comboN'),
   rank: $('#rank'), boss: $('#boss'), bossName: $('#boss .nm'), bossF: $('#boss .bar i'), bossB: $('#boss .bar u'),
   hud: $('#hud'), poiseF: $('#poiseBar i'), call: $('#call'), callBig: $('#call .big'), callSub: $('#call .sub'), poise: $('#poise'),
-  mflash: $('#mflash')
+  mflash: $('#mflash'),
+  hurt: $('#hurt'),
+  chapterNo: document.getElementById('chapterNo'),
+  comboNum: null
 };
 let hpShown = 100, bossShown = 1, callT = 0;
 const _lv = new THREE.Vector3();
@@ -3611,47 +3616,92 @@ function callout(big, sub) {
 let hurtFlashT = 0;
 function flashHurt() { hurtFlashT = 0.3; }
 
+const _hudCache = {
+  hpF: -9, hpB: -9, musouF: -9, musouFull: null, ko: -1, ch: -1, poiseCls: -1,
+  timer: -1, combo: -1, rank: '', bossReady: null, bossName: '', bossF: -9, bossB: -9, hurt: ''
+};
+function setScale(el, key, v) {
+  if (Math.abs(v - _hudCache[key]) < 0.004) return;
+  _hudCache[key] = v;
+  el.style.transform = 'scaleX(' + v.toFixed(3) + ')';
+}
+function setText(el, key, v) {
+  if (_hudCache[key] === v) return;
+  _hudCache[key] = v;
+  el.textContent = v;
+}
+
 function updateHUD(dt) {
   hpShown = damp(hpShown, player.hp, 10, dt);
-  UI.hpF.style.transform = `scaleX(${clamp(hpShown / player.maxhp, 0, 1)})`;
-  UI.hpB.style.transform = `scaleX(${clamp(player.hp / player.maxhp, 0, 1)})`;
+  setScale(UI.hpF, 'hpF', clamp(hpShown / player.maxhp, 0, 1));
+  setScale(UI.hpB, 'hpB', clamp(player.hp / player.maxhp, 0, 1));
   const mk = player.musou / player.maxMusou;
-  UI.musouF.style.transform = `scaleX(${mk})`;
-  UI.musou.classList.toggle('full', mk >= 0.999);
-  UI.ko.textContent = player.ko;
-  const ch = document.getElementById('chapterNo');
-  if (ch) ch.textContent = G.chapter > 1 ? `第 ${G.chapter} 章` : '';
+  setScale(UI.musouF, 'musouF', mk);
+  const full = mk >= 0.999;
+  if (_hudCache.musouFull !== full) { _hudCache.musouFull = full; UI.musou.classList.toggle('full', full); }
+
+  setText(UI.ko, 'ko', String(player.ko));
+  if (UI.chapterNo) setText(UI.chapterNo, 'ch', G.chapter > 1 ? '第 ' + G.chapter + ' 章' : '');
+
   const pk = UI.poise.children;
   if (pk.length !== player.maxPoise) {
     UI.poise.innerHTML = '';
     for (let i = 0; i < player.maxPoise; i++) UI.poise.appendChild(document.createElement('i'));
+    _hudCache.poiseCls = -1;
   }
-  for (let i = 0; i < pk.length; i++) pk[i].className = i < player.poise ? 'on' : '';
+  const pc = player.poise;
+  if (_hudCache.poiseCls !== pc) {
+    _hudCache.poiseCls = pc;
+    for (let i = 0; i < pk.length; i++) pk[i].className = i < pc ? 'on' : '';
+  }
   const t = Math.floor(G.time);
-  UI.timer.textContent = String((t / 60) | 0).padStart(2, '0') + ':' + String(t % 60).padStart(2, '0');
+  if (_hudCache.timer !== t) {
+    _hudCache.timer = t;
+    UI.timer.textContent = String(((t / 60) | 0)).padStart(2, '0') + ':' + String(t % 60).padStart(2, '0');
+  }
 
-  if (player.combo > 1) {
-    UI.combo.classList.add('on');
-    UI.comboN.innerHTML = player.combo + '<small>连击</small>';
-    const rk = player.combo > 60 ? '无双' : player.combo > 40 ? 'S' : player.combo > 25 ? 'A' : player.combo > 12 ? 'B' : 'C';
-    UI.rank.textContent = rk;
-    UI.rank.style.color = rk === '无双' ? '#ff6a52' : rk === 'S' ? '#ffd76a' : '#e8c37a';
-  } else UI.combo.classList.remove('on');
+  const cb = player.combo;
+  if (cb > 1) {
+    if (_hudCache.combo !== cb) {
+      _hudCache.combo = cb;
+      UI.combo.classList.add('on');
+      /* 不再每帧 innerHTML：只更新数字文本节点 */
+      if (!UI.comboNum) {
+        UI.comboN.innerHTML = '<span>0</span><small>连击</small>';
+        UI.comboNum = UI.comboN.firstChild;
+      }
+      UI.comboNum.nodeValue = String(cb);
+    }
+    const rk = cb > 60 ? '无双' : cb > 40 ? 'S' : cb > 25 ? 'A' : cb > 12 ? 'B' : 'C';
+    if (_hudCache.rank !== rk) {
+      _hudCache.rank = rk;
+      UI.rank.textContent = rk;
+      UI.rank.style.color = rk === '无双' ? '#ff6a52' : rk === 'S' ? '#ffd76a' : '#e8c37a';
+    }
+  } else if (_hudCache.combo !== -1) {
+    _hudCache.combo = -1;
+    UI.combo.classList.remove('on');
+  }
 
   if (G.boss && G.boss.active && !G.boss.dead) {
-    UI.boss.classList.toggle('ready', (G.boss.poise || 0) >= 100);
-    UI.poiseF.style.transform = `scaleX(${(G.boss.poise || 0) / 100})`;
-    UI.boss.classList.add('on');
-    UI.bossName.textContent = G.boss.name;
+    const bp = G.boss.poise || 0, ready = bp >= 100;
+    if (_hudCache.bossReady !== ready) { _hudCache.bossReady = ready; UI.boss.classList.toggle('ready', ready); }
+    setScale(UI.poiseF, 'poiseF', bp / 100);
+    if (_hudCache.bossName !== G.boss.name) { _hudCache.bossName = G.boss.name; UI.bossName.textContent = G.boss.name; }
     const k = clamp(G.boss.hp / G.boss.maxhp, 0, 1);
-    UI.bossF.style.transform = `scaleX(${k})`;
+    setScale(UI.bossF, 'bossF', k);
     bossShown = damp(bossShown, k, 6, dt);
-    UI.bossB.style.transform = `scaleX(${bossShown})`;
-  } else UI.boss.classList.remove('on');
+    setScale(UI.bossB, 'bossB', bossShown);
+    UI.boss.classList.add('on');
+  } else if (_hudCache.bossReady !== false) {
+    _hudCache.bossReady = false;
+    UI.boss.classList.remove('on');
+  }
 
   if (callT > 0) { callT -= dt; if (callT <= 0) UI.call.classList.remove('on'); }
   hurtFlashT = Math.max(0, hurtFlashT - dt);
-  $('#hurt').style.opacity = hurtFlashT > 0 ? String(clamp(hurtFlashT * 2.2, 0, 0.85)) : '0';
+  const hv = hurtFlashT > 0 ? (Math.round(clamp(hurtFlashT * 2.2, 0, 0.85) * 100) / 100).toString() : '0';
+  if (_hudCache.hurt !== hv) { _hudCache.hurt = hv; UI.hurt.style.opacity = hv; }
 }
 
 /* ============================================================
