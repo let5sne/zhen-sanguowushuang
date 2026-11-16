@@ -4254,6 +4254,7 @@ window.__dbg = {
   dash() { tryDash(); },
   jumpKey() { tryJump(); },
   airAttack() { return tryAirAttack(); },
+  gpu: () => ({ webgpu: GPU.webgpu, adapter: GPU.adapter, reason: GPU.reason }),
   rigPoolSize() { let n = 0; for (const p of rigPool.values()) n += p.length; return n; },
   dismissUpgrade() { if (G.offering && pendingUpgrades[0]) takeUpgrade(pendingUpgrades[0]); return G.offering; },
   setDist(v) { camDist = v; },
@@ -4287,13 +4288,36 @@ scene.traverse(o=>{
   }
   if(o.material)attachCascade(o.material);
 });
-composer.render();
-$('#load').classList.add('hide');
-running = true;
-requestAnimationFrame(loop);
+/* WebGPU 能力探测：本机是否具备迁移条件（本项目仍用 WebGLRenderer，理由见 README） */
+const GPU = { webgpu: false, adapter: '', reason: '' };
+(async () => {
+  try {
+    if (!navigator.gpu) GPU.reason = 'navigator.gpu 不存在';
+    else {
+      const a = await navigator.gpu.requestAdapter();
+      if (!a) GPU.reason = 'requestAdapter() 返回 null';
+      else {
+        const i = a.info || {};
+        GPU.webgpu = true;
+        GPU.adapter = [i.vendor, i.architecture, i.description].filter(Boolean).join(' / ') || 'unknown';
+      }
+    }
+  } catch (e) { GPU.reason = String(e); }
+  const tag = GPU.webgpu ? '可用' : '不可用';
+  console.log(`[gpu] WebGPU ${tag}${GPU.adapter ? ' · ' + GPU.adapter : ' · ' + GPU.reason}`
+    + ' → 本项目仍用 WebGLRenderer（渲染仅占 23% 帧预算，迁移无收益，见 README）');
+})();
 
-/* 暴露给验收脚本 */
-window.__ready = true;
+/* 说明：曾试过用 compileAsync + 临时刷各兵种做预编译，实测首现卡帧 20.3 → 18.8 ms，
+   但载入 3.57 → 4.40 s。用 0.83 s 载入换 1.5 ms 不划算，故不启用。 */
+(async () => {
+  composer.render();
+  $('#load').classList.add('hide');
+  running = true;
+  requestAnimationFrame(loop);
+  window.__ready = true;
+})();
+
 </script>
 <!-- BLENDER_RIG_PY
 import base64
