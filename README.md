@@ -260,6 +260,48 @@ P1–P12 实测要点：`hdr=true`（全部 RT 含 bloom mip 链均为 HalfFloat
 | 近景有磨损/污渍 | 角色 1024² PBR（甲片 grime）+ 砖石 albedo/height/rough 三通道 + 每单位 `uWear/uSeed` | — |
 | 远景雾 + LOD，无跳变 | `FogExp2` + 动画 LOD 分档 18/35/60 m | **无按距离隐藏物体**（只有 `player3.visible` 死亡闪烁） |
 
+## 关于 WebGPU（评估结论：暂不迁移）
+
+**结论：本机 WebGPU 可用（Apple Metal / Chrome 157），但迁移到 WebGPURenderer 不会带来可测收益，反而降低兼容性。**
+
+### 兼容性（2026-11 现状）
+
+| 环境 | WebGPU | 备注 |
+|---|---|---|
+| Chrome / Edge 桌面 | ✅ 113+ | 稳定支持 |
+| Safari macOS | ◐ 26+ 默认 | 17.4–25 需手动开 flag |
+| Firefox | ❌ 默认关闭 | 141+ 仍需 `dom.webgpu.enabled` |
+
+本项目面向"浏览器打开即玩"，Firefox 用户与旧 Safari 需要回退路径。
+
+### three.js 侧现状
+
+- `WebGPURenderer` 自 **r171** 起稳定，入口 `three/webgpu`（r170 起 WebGPU 模块移入 addons）。
+- 本项目锁 **r160**，升级三需连带改动渲染管线。
+- WebGPU 路径**不支持**：GLSL `ShaderMaterial`、`RawShaderMaterial`、`onBeforeCompile`、经典 `EffectComposer` pass。
+  本项目恰好用了：自写 `BattlefieldAtmosphere`、Grade、FXAA 三个 ShaderPass + `UnrealBloomPass`
+  + 5 处 `onBeforeCompile` 注入（级联阴影、顶点风、单位 wear/tint）。迁移需全部改写为 TSL 节点材质 + `PostProcessing`。
+
+### 实测瓶颈（Apple M1 / 1440×810 / Chrome 157）
+
+| 单位数 | 游戏逻辑 | 渲染（含 `gl.finish`） | 合计 | 帧预算占用 |
+|---|---|---|---|
+| 0 | 0.25 ms | 0.70 ms | 0.95 ms | 6% |
+| 60 | 0.92 ms | 2.01 ms | 2.93 ms | 18% |
+| 128 | 1.99 ms | **3.88 ms** | 5.87 ms | **35%** |
+
+60 fps 的帧预算是 16.67 ms。**渲染只占 23%，逻辑占 12%，总计 35%**——GPU 与 CPU 都远未饱和。
+WebGPU 即便把渲染削掉 30%，也只省约 1.1 ms（5.87 → 4.8 ms），肉眼与帧率均不可见。
+
+真正的帧率杀手是**其它进程抢占 CPU**（实测同一构建 load 2.7 时 60 fps、load 21 时 32 fps）。
+
+### 已落地的部分
+
+- **WebGPU 能力探测**：启动时 `navigator.gpu.requestAdapter()`，结果存 `GPU` 并可通过 `__dbg.gpu()` 查询，
+  同时在控制台打印一行结论（本机：`{webgpu: true, adapter: "apple / metal-3"}`）。为零成本的前置判据。
+- **预编译（`compileAsync`）评估后不启用**：实测首现卡帧 20.3 → 18.8 ms（−1.5 ms），但载入 3.57 → 4.40 s。
+  0.83 s 载入换 1.5 ms 不划算，结论写在代码注释里。
+
 ## 迭代提示词
 
 三条线的迭代提示词（渲染 / 生成 / 本文件）：`prompts/01-musou.md`、`prompts/02-photo.md`、
