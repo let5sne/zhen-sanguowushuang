@@ -2523,7 +2523,8 @@ function updateVolley(dt) {
     for (const s of ready) { s.state = 'wind'; s.t = -0.42; s.cool = rand(2.2, 3.4); }
     const heavy = ready.length >= 6;
     showVolleyWarn(player.pos.x, player.pos.z, heavy ? 2 : 1);
-    G.volleyT = (heavy ? 6.4 : 5.2) * PRESSURE.volleyMul;
+    const vBase = Math.max(3.6, (heavy ? 6.4 : 5.2) - 0.35 * ((G.chapter || 1) - 1));
+    G.volleyT = vBase * PRESSURE.volleyMul;
     callout(heavy ? '大 阵 齐 射' : '齐 射', heavy ? `${ready.length} 弓` : '弓 兵');
     SFX.drum(heavy ? 1.45 : .9);
     if (heavy) { SFX.officer(); shake(.22, .3); }
@@ -3911,7 +3912,7 @@ function resetGame() {
   /* 开局列阵 */
   for (let i = 0; i < 40; i++) {
     const a = (i / 40) * TAU + rand(-.08, .08), r = rand(13, 24);
-    const t = i % 8 === 0 ? 'archer' : (i % 2 ? 'dao' : 'spear');
+    const t = rollType();
     spawnEnemy(t, Math.cos(a) * r, 14 + Math.sin(a) * r * 0.9);
   }
   callout('虎牢关之战', '敌将 华雄 出阵');
@@ -3924,6 +3925,20 @@ function hideAll() {
 }
 
 function activeCount() { let n = 0; for (const s of E) if (s.active && !s.dead) n++; return n; }
+
+/* 章节敌人构成：越往后弓兵越多、刀兵越少，逼玩家改变打法
+   （第 1 章以刀兵为主可正面硬推；第 3 章起弓兵接近三成，必须走位与借掩体） */
+const COMPOSITION = [
+  { dao: .50, spear: .38, archer: .12 },   /* 第 1 章 */
+  { dao: .40, spear: .42, archer: .18 },   /* 第 2 章 */
+  { dao: .32, spear: .40, archer: .28 },   /* 第 3 章 */
+  { dao: .26, spear: .38, archer: .36 }    /* 第 4 章及以后 */
+];
+function rollType() {
+  const c = COMPOSITION[Math.min((G.chapter || 1) - 1, COMPOSITION.length - 1)];
+  const r = Math.random();
+  return r < c.dao ? 'dao' : (r < c.dao + c.spear ? 'spear' : 'archer');
+}
 
 function spawnOfficer(name, hp, scale, tint) {
   const a = rand(0, TAU), r = 16;
@@ -3959,7 +3974,7 @@ function updateDirector(dt) {
     const n = Math.min(gap > 12 ? 3 : 1, gap);
     for (let i = 0; i < n; i++) {
       const a = rand(0, TAU), r = rand(24, 32);
-      const t = Math.random() < .12 ? 'archer' : (Math.random() < .5 ? 'dao' : 'spear');
+      const t = rollType();
       spawnEnemy(t, player.pos.x + Math.cos(a) * r, player.pos.z + Math.sin(a) * r);
     }
   }
@@ -4310,7 +4325,7 @@ window.__dbg = {
     }
     return { mean: +(s / n).toFixed(3), clipped: +(clip / n * 100).toFixed(2), nearBlack: +(dark / n * 100).toFixed(2), w, h };
   },
-  spawn(n = 10) { for (let i = 0; i < n; i++) { const a = i / n * TAU; spawnEnemy(Math.random() < .3 ? 'archer' : (Math.random() < .5 ? 'dao' : 'spear'), Math.cos(a) * 12, Math.sin(a) * 12); } return activeCount(); },
+  spawn(n = 10) { for (let i = 0; i < n; i++) { const a = i / n * TAU; spawnEnemy(rollType(), Math.cos(a) * 12, Math.sin(a) * 12); } return activeCount(); },
   kill(n = 5) { let c = 0; for (const s of E) { if (c >= n) break; if (s.active && !s.dead && !s.officer) { killEnemy(s, true); c++; } } return c; },
   killBoss() { if (G.boss) { killEnemy(G.boss); return true; } return false; },
   musou() { player.musou = player.maxMusou; activateMusou(); },
