@@ -77,6 +77,66 @@ def add_sphere(name, r, loc, scale=(1,1,1), seg=12, ring=8, m=None):
     if m: ob.data.materials.append(m)
     return ob
 
+def loft(name, rings, seg=16, m=None, power=2.0, cap=True):
+    """沿 Z 堆叠的截面放样：rings = [(z, rx, ry[, cy[, cx]]), ...]，截面为超椭圆（power=2 为椭圆，越大越方）。
+    用来做有粗细变化的躯干/四肢，替代原来的方盒与直圆柱。"""
+    bm = bmesh.new(); rows = []; e = 2.0 / power
+    for ring in rings:
+        z, rx, ry = ring[:3]
+        cy = ring[3] if len(ring) > 3 else 0.0
+        cx = ring[4] if len(ring) > 4 else 0.0
+        row = []
+        for i in range(seg):
+            a = i / seg * TAU; c, sn = math.cos(a), math.sin(a)
+            row.append(bm.verts.new((cx + rx * math.copysign(abs(c) ** e, c), cy + ry * math.copysign(abs(sn) ** e, sn), z)))
+        rows.append(row)
+    for r in range(len(rows) - 1):
+        for i in range(seg):
+            j = (i + 1) % seg
+            bm.faces.new((rows[r][i], rows[r][j], rows[r + 1][j], rows[r + 1][i]))
+    if cap:
+        bm.faces.new(list(reversed(rows[0]))); bm.faces.new(rows[-1])
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    me = bpy.data.meshes.new(name); bm.to_mesh(me); bm.free()
+    ob = bpy.data.objects.new(name, me)
+    bpy.context.collection.objects.link(ob)
+    if m: ob.data.materials.append(m)
+    return ob
+
+def cone_panel(name, a0, a1, z0, z1, r0, r1, thick=0.012, us=4, vs=3, m=None, bulge=0.0):
+    """沿着外扩的椭圆锥面切出一块有厚度的弧形甲片（a 为绕身体的角度，0 = 正前方）。
+    r0/r1 = (rx, ry) 为上沿/下沿的半径；bulge 让甲片中线略微外鼓。"""
+    bm = bmesh.new(); grid = []
+    for side in (0, 1):
+        layer = []
+        for j in range(vs + 1):
+            t = j / vs; z = z0 + (z1 - z0) * t
+            rx = r0[0] + (r1[0] - r0[0]) * t; ry = r0[1] + (r1[1] - r0[1]) * t
+            row = []
+            for i in range(us + 1):
+                u = i / us; a = a0 + (a1 - a0) * u
+                k = 1 + bulge * math.sin(u * math.pi) + side * thick / max(rx, ry)
+                row.append(bm.verts.new((math.sin(a) * rx * k, -math.cos(a) * ry * k, z)))
+            layer.append(row)
+        grid.append(layer)
+    inner, outer = grid
+    for j in range(vs):
+        for i in range(us):
+            bm.faces.new((outer[j][i], outer[j + 1][i], outer[j + 1][i + 1], outer[j][i + 1]))
+            bm.faces.new((inner[j][i], inner[j][i + 1], inner[j + 1][i + 1], inner[j + 1][i]))
+    for j in range(vs):     # 左右侧边
+        bm.faces.new((inner[j][0], inner[j + 1][0], outer[j + 1][0], outer[j][0]))
+        bm.faces.new((outer[j][us], outer[j + 1][us], inner[j + 1][us], inner[j][us]))
+    for i in range(us):     # 上下沿
+        bm.faces.new((inner[0][i], outer[0][i], outer[0][i + 1], inner[0][i + 1]))
+        bm.faces.new((outer[vs][i], inner[vs][i], inner[vs][i + 1], outer[vs][i + 1]))
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    me = bpy.data.meshes.new(name); bm.to_mesh(me); bm.free()
+    ob = bpy.data.objects.new(name, me)
+    bpy.context.collection.objects.link(ob)
+    if m: ob.data.materials.append(m)
+    return ob
+
 def join(objs, name):
     bpy.ops.object.select_all(action='DESELECT')
     for o in objs: o.select_set(True)
@@ -106,62 +166,76 @@ M_DARK   = mat("dark",   (0.16, 0.17, 0.19), 0.55, 0.45)
 
 parts = {}
 
-# ================= 躯干 =================
+# ================= 躯干（放样：腰细、胸宽、肩收，带护心镜与圆肩甲） =================
 o = []
-o.append(add_box("chest", (0.42, 0.26, 0.40), (0, 0, 0.36), bevel=0.035, seg=2, m=M_ARMOR,
-                 taper=(0.96, 0.96, 0.82, 0.86)))
-o.append(add_box("chestplate", (0.30, 0.05, 0.26), (0, -0.135, 0.38), bevel=0.015, m=M_STEEL))
-o.append(add_box("backplate", (0.30, 0.04, 0.24), (0, 0.135, 0.40), bevel=0.015, m=M_ARMOR))
-o.append(add_box("collar", (0.30, 0.22, 0.09), (0, 0, 0.565), bevel=0.02, m=M_ARMOR))
-o.append(add_box("belt", (0.44, 0.29, 0.075), (0, 0, 0.075), bevel=0.012, m=M_LEATH))
-o.append(add_box("buckle", (0.09, 0.03, 0.07), (0, -0.152, 0.075), bevel=0.008, m=M_TRIM))
+o.append(loft("body", [(0.00,.150,.112),(0.12,.160,.118),(0.24,.196,.132),(0.36,.232,.148),
+                       (0.47,.242,.144),(0.555,.200,.124),(0.60,.120,.090)], seg=18, m=M_ARMOR, power=2.4))
+o.append(add_sphere("chestplate", 0.15, (0, -0.118, 0.395), scale=(1.18, 0.34, 0.95), seg=16, ring=10, m=M_STEEL))
+o.append(add_sphere("backplate", 0.15, (0, 0.118, 0.405), scale=(1.15, 0.30, 0.90), seg=14, ring=8, m=M_ARMOR))
+o.append(add_sphere("mirror", 0.052, (0, -0.168, 0.40), scale=(1, 0.32, 1), seg=14, ring=8, m=M_TRIM))   # 护心镜
+o.append(loft("collar", [(0.535,.165,.125),(0.615,.150,.112)], seg=16, m=M_ARMOR, cap=False))
+o.append(loft("belt", [(0.035,.172,.130),(0.115,.176,.134)], seg=18, m=M_LEATH, power=2.2, cap=False))
+o.append(add_box("buckle", (0.09, 0.03, 0.07), (0, -0.152, 0.075), bevel=0.012, seg=2, m=M_TRIM))
 for s in (-1, 1):
-    o.append(add_box("pad%d" % s, (0.21, 0.25, 0.10), (s * 0.255, 0, 0.555),
-                     rot=(0, s * 0.30, 0), bevel=0.03, m=M_ARMOR))
-    o.append(add_box("padtrim%d" % s, (0.215, 0.255, 0.028), (s * 0.255, 0, 0.505),
-                     rot=(0, s * 0.30, 0), bevel=0.008, m=M_TRIM))
-o.append(add_cyl("neck", 0.072, 0.078, 0.10, (0, 0, 0.625), seg=10, m=M_SKIN))
+    o.append(add_sphere("pad%d" % s, 0.13, (s * 0.268, 0, 0.545), scale=(1.0, 1.04, 0.62), seg=16, ring=10, m=M_ARMOR))
+    o.append(add_sphere("padtrim%d" % s, 0.135, (s * 0.268, 0, 0.515), scale=(1.02, 1.06, 0.16), seg=16, ring=6, m=M_TRIM))
+o.append(add_cyl("neck", 0.066, 0.074, 0.10, (0, 0, 0.625), seg=12, m=M_SKIN))
 parts['torso'] = join(o, "torso")
 
-# ================= 裙甲 =================
+# ================= 裙甲（外扩的布裙打底 + 弧形甲片两层交叠，替代原来的 8 块平板） =================
 o = []
-for i in range(8):
-    a = i / 8 * TAU
-    r = 0.155
-    px, py = math.sin(a) * r, -math.cos(a) * r
-    ob = add_box("tasset%d" % i, (0.135, 0.028, 0.27), (px, py, -0.10),
-                 rot=(math.radians(11), 0, -a), bevel=0.008, m=M_CLOTH if i % 2 else M_ARMOR)
-    o.append(ob)
+o.append(loft("underskirt", [(0.040,.168,.128),(-0.08,.190,.152),(-0.22,.222,.186),(-0.255,.230,.194)], seg=20, m=M_CLOTH, power=2.2, cap=False))
+TAS = 7                                      # 前后 7 片，留出两侧开衩方便迈腿
+for layer, (z0, z1, rr, sp) in enumerate([(0.035, -0.150, (0, 0), 1.00), (-0.070, -0.245, (0.010, 0.012), 0.92)]):
+    for i in range(TAS):
+        if i in (1, 5) and layer == 1:       # 下层在两侧（约 ±95°，迈腿方向）少两片，露出布裙
+            continue
+        c = (i - (TAS - 1) / 2) / TAS * TAU * 0.92 + (0 if i < TAS / 2 else 0)
+        half = TAU / TAS * 0.5 * sp * 1.06
+        o.append(cone_panel("tasset%d_%d" % (layer, i), c - half, c + half, z0, z1,
+                            (0.176 + rr[0], 0.136 + rr[1]), (0.232 + rr[0], 0.198 + rr[1]),
+                            thick=0.013, us=4, vs=3, bulge=0.05,
+                            m=M_ARMOR if (i + layer) % 2 == 0 else M_TRIM if i == (TAS - 1) // 2 else M_ARMOR))
 parts['skirt'] = join(o, "skirt")
 
-# ================= 手臂（肩为轴，向下 -Z） =================
+# ================= 手臂（肩为轴，向下 -Z；上臂有肱二头肌鼓起，前臂收向手腕，带护腕与手指） =================
 o = []
-o.append(add_sphere("shoulder", 0.088, (0, 0, -0.02), scale=(1, 1, 0.95), m=M_ARMOR))
-o.append(add_cyl("upper", 0.072, 0.062, 0.28, (0, 0, -0.16), seg=9, m=M_CLOTH))
-o.append(add_sphere("elbow", 0.066, (0, 0, -0.305), m=M_ARMOR))
-o.append(add_cyl("fore", 0.062, 0.052, 0.23, (0, 0, -0.425), seg=9, m=M_CLOTH))
-o.append(add_box("hand", (0.085, 0.085, 0.10), (0, -0.005, -0.555), bevel=0.02, m=M_SKIN))
+o.append(add_sphere("shoulder", 0.098, (0, 0, -0.02), scale=(1, 1, 0.95), seg=14, ring=10, m=M_ARMOR))
+o.append(loft("upper", [(-0.03,.086,.082),(-0.10,.096,.090),(-0.18,.088,.081),(-0.27,.074,.070),(-0.31,.069,.066)], seg=14, m=M_CLOTH))
+o.append(add_sphere("elbow", 0.073, (0, 0.004, -0.305), seg=12, ring=8, m=M_ARMOR))
+o.append(loft("fore", [(-0.31,.070,.067),(-0.36,.078,.073),(-0.45,.066,.061),(-0.52,.052,.048),(-0.545,.048,.044)], seg=14, m=M_CLOTH))
+o.append(loft("bracer", [(-0.37,.084,.079),(-0.44,.075,.070),(-0.505,.062,.057)], seg=14, m=M_ARMOR, power=2.3, cap=False))
+o.append(loft("palm", [(-0.535,.044,.028),(-0.560,.050,.030),(-0.585,.046,.028)], seg=12, m=M_SKIN, power=2.6))
+for k in range(4):   # 手指缩短，手总长与旧版 box 手一致（≈-0.605），避免穿地/改变握枪位置
+    o.append(add_cyl("finger%d" % k, 0.0105, 0.009, 0.040, (-0.033 + k * 0.022, -0.006, -0.600), rot=(0.35, 0, 0), seg=6, m=M_SKIN))
+o.append(add_cyl("thumb", 0.012, 0.010, 0.05, (0, -0.036, -0.575), rot=(1.05, 0, 0), seg=6, m=M_SKIN))
 parts['arm'] = join(o, "arm")
 
-# ================= 腿（髋为轴，向下 -Z） =================
+# ================= 腿（髋为轴，向下 -Z；大腿收向膝，小腿肚向后鼓，护胫 + 带鞋头的靴子） =================
 o = []
-o.append(add_cyl("thigh", 0.098, 0.082, 0.42, (0, 0, -0.21), seg=9, m=M_CLOTH))
-o.append(add_sphere("knee", 0.082, (0, -0.005, -0.43), m=M_ARMOR))
-o.append(add_cyl("shin", 0.082, 0.068, 0.35, (0, 0, -0.615), seg=9, m=M_CLOTH))
-o.append(add_box("boot", (0.145, 0.25, 0.11), (0, -0.035, -0.855), bevel=0.02, m=M_LEATH))
+o.append(loft("thigh", [(0.00,.100,.100),(-0.10,.106,.101),(-0.25,.090,.086),(-0.38,.076,.072),(-0.435,.070,.068)], seg=14, m=M_CLOTH))
+o.append(add_sphere("knee", 0.072, (0, -0.012, -0.43), scale=(1, 1.1, 1), seg=12, ring=8, m=M_ARMOR))
+o.append(loft("shin", [(-0.44,.070,.068,0.0),(-0.52,.075,.080,0.012),(-0.66,.060,.062,0.006),(-0.79,.050,.050,0.0)], seg=14, m=M_CLOTH))
+o.append(loft("greave", [(-0.47,.079,.076,-0.004),(-0.60,.070,.070,-0.004),(-0.745,.058,.056,-0.004)], seg=14, m=M_ARMOR, power=2.2, cap=False))
+o.append(loft("ankle", [(-0.78,.056,.056),(-0.86,.066,.070,-0.01)], seg=14, m=M_LEATH))
+o.append(add_box("boot", (0.12, 0.24, 0.08), (0, -0.045, -0.875), bevel=0.034, seg=3, m=M_LEATH))
+o.append(add_sphere("toe", 0.06, (0, -0.14, -0.885), scale=(1, 1.3, 0.62), seg=12, ring=8, m=M_LEATH))
 parts['leg'] = join(o, "leg")
 
-# ================= 头 + 盔 =================
+# ================= 头 + 盔（圆颅、收窄的下颌与下巴、鼻梁、眉骨、耳；盔帽檐缩小并后移，露出脸） =================
 o = []
-o.append(add_box("skull", (0.195, 0.215, 0.235), (0, 0, 0.755), bevel=0.04, seg=3, m=M_SKIN,
-                 taper=(0.95, 0.95, 0.88, 0.9)))
-o.append(add_box("jaw", (0.155, 0.19, 0.075), (0, -0.012, 0.665), bevel=0.025, m=M_SKIN))
-o.append(add_sphere("dome", 0.155, (0, 0.005, 0.855), scale=(1.0, 1.06, 0.82), m=M_ARMOR))
-o.append(add_cyl("brim", 0.192, 0.20, 0.028, (0, 0.005, 0.812), seg=14, m=M_ARMOR))
-o.append(add_box("neckguard", (0.27, 0.17, 0.05), (0, 0.075, 0.775), rot=(math.radians(-22), 0, 0),
-                 bevel=0.012, m=M_ARMOR))
-o.append(add_box("crest", (0.028, 0.115, 0.10), (0, 0.01, 0.965), bevel=0.008, m=M_TRIM))
-o.append(add_cyl("spike", 0.004, 0.022, 0.11, (0, 0.01, 1.055), seg=6, m=M_TRIM))
+o.append(add_sphere("cranium", 0.100, (0, 0.006, 0.775), scale=(0.95, 1.05, 1.08), seg=18, ring=12, m=M_SKIN))
+o.append(loft("jaw", [(0.640,.050,.046,-0.036),(0.670,.074,.072,-0.020),(0.710,.088,.090,-0.006),(0.745,.092,.096,0.0)], seg=16, m=M_SKIN, power=2.2))
+o.append(add_cyl("nose", 0.019, 0.006, 0.048, (0, -0.100, 0.735), rot=(math.radians(100), 0, 0), seg=8, m=M_SKIN))
+o.append(add_box("brow", (0.160, 0.030, 0.022), (0, -0.094, 0.786), bevel=0.010, seg=2, m=M_SKIN))
+for s in (-1, 1):
+    o.append(add_sphere("ear%d" % s, 0.022, (s * 0.098, 0.010, 0.750), scale=(0.5, 1, 1.3), seg=8, ring=6, m=M_SKIN))
+    o.append(add_box("cheekguard%d" % s, (0.020, 0.090, 0.095), (s * 0.103, -0.010, 0.735), rot=(0, 0, s * 0.18), bevel=0.008, m=M_ARMOR))
+o.append(add_sphere("dome", 0.148, (0, 0.012, 0.862), scale=(1.0, 1.06, 0.80), seg=18, ring=10, m=M_ARMOR))
+o.append(add_cyl("brim", 0.165, 0.170, 0.020, (0, 0.030, 0.828), seg=18, m=M_ARMOR))
+o.append(add_box("neckguard", (0.27, 0.17, 0.05), (0, 0.080, 0.780), rot=(math.radians(-22), 0, 0), bevel=0.014, m=M_ARMOR))
+o.append(add_box("crest", (0.028, 0.115, 0.10), (0, 0.012, 0.968), bevel=0.010, m=M_TRIM))
+o.append(add_cyl("spike", 0.004, 0.022, 0.11, (0, 0.012, 1.058), seg=8, m=M_TRIM))
 parts['head'] = join(o, "head")
 
 # ================= 刀（手为原点，沿 Z） =================
@@ -279,3 +353,22 @@ out_path = os.environ.get('PARTS_OUT', '/tmp/parts.json')
 open(out_path, 'w').write(json.dumps(out))
 print('written', out_path)
 result = {"ok": True, "total_b64": sum(len(v) for v in out.values())}
+
+# ---- 写回产物：只替换本脚本生成的部件，GEO_B64 里其它部件（plume/halberd 等）保持不变 ----
+from pathlib import Path
+target = Path.cwd() / os.environ.get("TARGET", "demos/index-webgpu.html")
+if target.exists():
+    html = target.read_text()
+    head, rest = html.split("const GEO_B64 = {", 1)
+    block, tail = rest.split("\n};", 1)
+    order, cur = [], {}
+    for line in block.splitlines():
+        if ":" not in line: continue
+        k, v = line.strip().split(":", 1)
+        k = k.strip(); order.append(k); cur[k] = v.strip().rstrip(",").strip('"')
+    for k, v in out.items():
+        if k not in cur: order.append(k)
+        cur[k] = v
+    block = "\n" + "\n".join('  %s: "%s",' % (k, cur[k]) for k in order)
+    target.write_text(head + "const GEO_B64 = {" + block + "\n};" + tail)
+    print("GEO_B64 updated in", target, "parts:", ",".join(out.keys()))

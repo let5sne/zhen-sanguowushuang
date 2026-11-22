@@ -201,6 +201,16 @@ for variant, weapon in VARIANTS:
                 if v[1] < .16:
                     t2 = max(0,min(1,(.18-v[1])/.10))
                     weight = {joint+1:1-t2,joint+2:t2}
+            elif name == "skirt":
+                # 裙甲跟腿：越往下、越靠前后正中，越多跟随大腿骨（左 14 / 右 17）；
+                # 腰部一圈仍全给髋骨，保证系带处不撕开。两侧开衩处（|z| 小）基本不动。
+                down = max(0, min(1, (0.86 - v[1]) / 0.20))
+                fb = max(0, min(1, abs(v[2]) / 0.20))           # 0 = 侧面，1 = 正前/正后
+                amount = down * down * fb * 0.70
+                wl = max(0, min(1, 0.5 - v[0] / 0.16))           # x<0 → 左腿
+                weight = {1: 1 - amount}
+                if amount * wl > 0: weight[14] = amount * wl
+                if amount * (1 - wl) > 0: weight[17] = amount * (1 - wl)
             else:
                 weight = {joint:1}
             weights.append(weight)
