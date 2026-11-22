@@ -282,7 +282,8 @@ const canvas = $('#c');
 /* ============================================================
    1. 渲染器 / 场景 / 后期
    ============================================================ */
-const renderer = new THREE.WebGPURenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
+/* ?webgl=1 强制走 WebGL2 后端（用于测试回退路径） */
+const renderer = new THREE.WebGPURenderer({ canvas, antialias: false, powerPreference: 'high-performance', forceWebGL: new URLSearchParams(location.search).get('webgl') === '1' });
 await renderer.init();   /* 无 WebGPU 时自动回退 WebGL2 后端 */
 const BACKEND = renderer.backend.isWebGPUBackend ? 'webgpu' : 'webgl2';
 let PR = Math.min(window.devicePixelRatio || 1, 1.5);
@@ -1833,7 +1834,6 @@ function makeGpMat(additive) {
   const hardOcc = step(0, dz);
   const softOcc = saturate(dz.div(max(GP_SOFT, .001)));
   const soft = select(GP_SOFT.lessThan(0), float(1), mix(hardOcc, softOcc, smoothstep(GP_AIR0, GP_AIR0.add(1), p.y).mul(step(.0001, GP_SOFT))));
-  m.__dbgZ = { sceneZ, pViewZ };
   m.opacityNode = texture(TEX_DOT, uv()).a.mul(additive ? k : k.mul(k)).mul(alive).mul(soft).mul(additive ? .55 : .62);
   m.alphaTest = 0.003;
   /* 调试：GP_VIS=1 显示场景深度，2 显示粒子深度（灰度 = -z/60） */
@@ -4557,6 +4557,12 @@ window.__dbg = {
   setDist(v) { camDist = v; },
   list() { return E.filter(s => s.active).map(s => ({ t: s.type, hp: Math.round(s.hp), st: s.state, off: s.officer, x: +s.pos.x.toFixed(1), z: +s.pos.z.toFixed(1) })); }
 };
+/* 上线：排查用的调试接口只在 ?debug=1 时保留；验收脚本用到的接口（start/st/info/lum/spawn/killBoss/…）始终可用 */
+if (new URLSearchParams(location.search).get('debug') !== '1') {
+  for (const k of ['fxBurst','gpDebug','arrowTest','gpSoft','groundPuff','ppProbe','fxDbg','gpVis','gpAir0','airPuff','matHQ','handoffs','pushAway','handoffCheck','crowd','gpuParticles'])
+    delete window.__dbg[k];
+}
+
 
 /* ============================================================
    14. 启动
