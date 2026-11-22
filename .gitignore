@@ -2,3 +2,8 @@ runs/
 .DS_Store
 __pycache__/
 *.pyc
+
+# 本地参考源码与备份（不入库）
+vendor/
+three-*.tgz
+*.bak
