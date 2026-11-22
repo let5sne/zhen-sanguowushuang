@@ -2639,10 +2639,11 @@ function damageEnemy(s, dmg, dirX, dirZ, heavy) {
     speed: 3 + w * 4, up: 2.4, life: .28, size: .18 + w * .2, grav: -9
   });
   SFX.hit(isHeavy);
-  hitStop = Math.max(hitStop, .03 + w * .045);
-  shake(.06 + w * .2, .07 + w * .13);
-  s.pos.x += dirX * (.14 + w * .4);
-  s.pos.z += dirZ * (.14 + w * .4);
+  /* M0 打击感：轻击也要"顿一下"。下限从 .03/.06/.14 抬到 .045/.10/.24，重击上限略增 */
+  hitStop = Math.max(hitStop, .045 + w * .05);
+  shake(.10 + w * .22, .08 + w * .14);
+  s.pos.x += dirX * (.24 + w * .45);
+  s.pos.z += dirZ * (.24 + w * .45);
   /* 方向性硬直：正 = 前倾（从背后被打），负 = 后仰（正面被打） */
   /* 敌将架势：命中积攒，满 100 可处刑 */
   if (s.officer && s.hp <= 0) addValor(8);
@@ -2654,7 +2655,9 @@ function damageEnemy(s, dmg, dirX, dirZ, heavy) {
   s.hitLean = (facingDot > 0 ? 1 : -1) * (isHeavy ? 0.30 : 0.18);
   /* 先结算仪表，再判定死亡：击破也要攒槽 */
   if (player.state !== 'musou') player.musou = clamp(player.musou + (isHeavy ? 2.6 : 1.1) * player.musouMul, 0, player.maxMusou);
+  if (player.momentumT > 0 && player.state !== 'musou') player.musou = clamp(player.musou + 1.2 * player.musouMul, 0, player.maxMusou);
   player.combo++; player.comboT = 2.6;
+  checkComboMilestone();
   if (s.hp <= 0) { killEnemy(s); return; }
   /* 架势（硬直抗性）：轻击只攒架势，够了才打断；重击无视架势直接打断 */
   if (s.state !== 'dead') {
@@ -2673,9 +2676,44 @@ function damageEnemy(s, dmg, dirX, dirZ, heavy) {
   }
 }
 
+/* ---------------- M0：破势 & 连击里程碑 ---------------- */
+/* 破势：完美闪避/弹反后 2.5 s 内伤害 ×1.5、每次命中额外 +1.2 无双、移动 +15%；
+   把"会打"和"乱按"的收益拉开。 */
+function grantMomentum(tag) {
+  const fresh = !(player.momentumT > 0);
+  player.momentumT = 2.5;
+  player.musou = clamp(player.musou + 15 * player.musouMul, 0, player.maxMusou);
+  if (fresh) { callout('破 势', tag === '反' ? '弹反 · 伤害 ×1.5' : '见切 · 伤害 ×1.5'); SFX.officer && SFX.officer(); }
+  G.momentumCount = (G.momentumCount || 0) + 1;
+}
+/* 连击里程碑：50 / 100 / 200 / 300…（之后每 100） */
+const COMBO_MS = [50, 100, 200];
+function checkComboMilestone() {
+  const c = player.combo, last = G.lastComboMs || 0;
+  const next = COMBO_MS.find(m => m > last) || (Math.floor(last / 100) + 1) * 100;
+  if (c < next) return;
+  G.lastComboMs = next;
+  const big = next >= 100;
+  callout(next + ' 连斩', big ? '无双槽 +30 · 3 秒无伤' : '无双槽 +15');
+  player.musou = clamp(player.musou + (big ? 30 : 15) * player.musouMul, 0, player.maxMusou);
+  if (big) player.invuln = Math.max(player.invuln, 3);
+  hitStop = Math.max(hitStop, big ? .18 : .10);
+  shake(big ? .5 : .3, big ? .35 : .22);
+  shockRing(player.pos, big ? 9 : 6, .6, big ? 0xffe0a0 : 0xfff0c0);
+  burst(_v3.copy(player.pos).setY(1.3), big ? 60 : 30, { color: 0xffd9a0, speed: 10, up: 5, life: .7, size: .45, grav: -6 });
+  /* 冲击波：震退 7 m 内的杂兵 */
+  for (const o of E) {
+    if (!o.active || o.dead || o.officer) continue;
+    const dx = o.pos.x - player.pos.x, dz = o.pos.z - player.pos.z, d = Math.hypot(dx, dz);
+    if (d < 7) { o.pos.x += dx / (d || 1) * 1.2; o.pos.z += dz / (d || 1) * 1.2; o.state = 'stagger'; o.t = 0; o.atkP = 0; }
+  }
+}
+
 /* ---------------- 敌兵 AI ---------------- */
 let attackTokens = 0;
-const MAX_TOKENS = 2;
+/* M0：同时出手上限 2 → 4（压力高时到 5）。玩家必须闪避/弹反，而不是站桩连点 */
+const MAX_TOKENS_BASE = 4;
+let MAX_TOKENS = MAX_TOKENS_BASE;
 
 const CELL = 1.5, INV_CELL = 1 / CELL, GRID_N = 100, GRID_OFF = 50;
 const gridHead = new Int32Array(GRID_N * GRID_N);
@@ -2918,8 +2956,13 @@ function updateEnemies(dt) {
         else {
           SFX.swing(!!s.heavyAtk);
           const reach = s.reach;
-          if (dist < reach + (s.heavyAtk ? 1.4 : 0.55) && Math.abs(angDiff(Math.atan2(nx, nz), s.yaw)) < 1.35) {
+          const inArc = Math.abs(angDiff(Math.atan2(nx, nz), s.yaw)) < 1.35;
+          if (dist < reach + (s.heavyAtk ? 1.4 : 0.55) && inArc) {
             damagePlayer(s.dmg * (s.heavyAtk ? 1.7 : 1), nx, nz, s.heavyAtk);
+          } else if ((player.dashT > 0 || player.dashEndT > 0) && dist < reach + 4.5) {
+            /* M0：闪避本身会把玩家带出攻击范围，导致"完美闪避"几乎永远判不到。
+               出手瞬间仍在闪避中、且闪避前本应被打中 → 视为见切，给破势奖励（无伤） */
+            perfectDodge();
           }
         }
         s.heavyAtk = false; s.windMul = 1;
@@ -2974,6 +3017,7 @@ function updateEnemies(dt) {
       }
 
       /* 近战：进入攻击距离且令牌可用就抬手 */
+      MAX_TOKENS = MAX_TOKENS_BASE + (PRESSURE.tier >= 2 ? 1 : 0);
       if (s.type !== 'archer' && s.cool <= 0 && dist < s.range * .92 && attackTokens < MAX_TOKENS) {
         s.state = 'wind'; s.t = 0; attackTokens++;
         s.cool = rand(1.4, 2.8);
@@ -3218,6 +3262,12 @@ function updatePlayer(dt) {
   player.comboT -= dt; if (player.comboT <= 0) player.combo = 0;
   player.dashCd = Math.max(0, player.dashCd - dt);
   player.invuln = Math.max(0, player.invuln - dt);
+  if (player.perfectCd > 0) player.perfectCd -= dt;
+  if (player.dashT > 0) player.wasDashing = true; else if (player.wasDashing) { player.wasDashing = false; player.dashEndT = 0.18; }
+  if (player.dashEndT > 0) player.dashEndT -= dt;
+  if (player.counterT > 0) player.counterT -= dt;
+  if (player.momentumT > 0) { player.momentumT -= dt; if (Math.random() < dt * 20) burst(_v3.copy(player.pos).setY(1.2), 1, { color: 0x9fd0ff, speed: 1.5, up: 1.5, life: .4, size: .3, grav: 1 }); }
+  if (player.combo === 0) G.lastComboMs = 0;
   player.hurtT = Math.max(0, player.hurtT - dt);
   /* 格挡：按住 Q；前 0.16s 为"精准弹反"窗口 */
   if (player.blocking) {
@@ -3238,7 +3288,7 @@ function updatePlayer(dt) {
     const cy = camYaw;
     const wx = ix * Math.cos(cy) + iz * Math.sin(cy);
     const wz = -ix * Math.sin(cy) + iz * Math.cos(cy);
-    const sp = player.speed * (keys['shift'] ? player.sprintMul : 1) * (player.state === 'musou' ? .35 : 1) * (player.blocking ? .35 : 1);
+    const sp = player.speed * (player.momentumT > 0 ? 1.15 : 1) * (keys['shift'] ? player.sprintMul : 1) * (player.state === 'musou' ? .35 : 1) * (player.blocking ? .35 : 1);
     player.vel.x = damp(player.vel.x, wx * sp, 22, dt);
     player.vel.z = damp(player.vel.z, wz * sp, 22, dt);
     if (player.state !== 'attack' && player.state !== 'musou')
@@ -3377,7 +3427,7 @@ function resolvePlayerHit(atk) {
   const stage = atk.stage;
   const range = (heavy ? 4.3 : (stage === 2 ? 3.9 : 3.6)) * player.rangeMul;
   const halfArc = heavy ? 1.75 : (stage === 2 ? 1.15 : 1.35);
-  let dmg = (heavy ? 62 : [20, 22, 34][stage] || 20) * (atk.power || 1) * player.dmgMul;
+  let dmg = (heavy ? 62 : [20, 22, 34][stage] || 20) * (atk.power || 1) * player.dmgMul * (player.momentumT > 0 ? 1.5 : 1);
   const crit = player.critNext > 0;
   if (crit) { dmg *= 2; player.critNext = 0; }
   const thunder = player.musouLightning > 0 && player.state === 'musou';
@@ -3421,15 +3471,16 @@ function resolvePlayerHit(atk) {
 }
 
 /* ---------------- 玩家受击 / 无双 ---------------- */
-function damagePlayer(dmg, nx, nz, unblockable, invulnT) {
-  if (player.invuln > 0 || player.dead || player.state === 'musou') return;
-  if (player.airY > 0.02) dmg *= 0.5;   /* 浮空时更难被打中 */
-  /* 完美闪避：闪避前 0.14 s 内被击中 → 无伤 + 子弹时间 + 返还 CD */
-  if (player.dashT > 0.08) {
+/* 完美闪避（见切）：无伤 + 子弹时间 + 返还 CD + 破势 */
+function perfectDodge() {
+  if (player.perfectCd > 0) return;
+  player.perfectCd = 0.25;   /* 同一次闪避被多人同时出手时只结算一次 */
+  player.counterT = 0.9;     /* 见切后 0.9 s 内按攻击 = 瞬移反击斩 */
     player.musou = clamp(player.musou + 8 * player.musouMul, 0, player.maxMusou);
     player.invuln = Math.max(player.invuln, 0.30);
     player.dashCd = 0;
     if (player.critOnDodge) player.critNext = 1;
+    grantMomentum('闪');
     G.slow = Math.max(G.slow, 0.40);
     hitStop = Math.max(hitStop, 0.10);
     shake(.16, .14);
@@ -3437,8 +3488,13 @@ function damagePlayer(dmg, nx, nz, unblockable, invulnT) {
     shockRing(player.pos, 2.8, .30, 0x9fd0ff);
     burst(_v3.copy(player.pos).setY(1.2), 12, { color: 0x9fd0ff, speed: 6, up: 2, life: .35, size: .3, grav: -8 });
     popDamage(_v3.copy(player.pos).setY(2.0), '闪避', 'parry');
-    return;
-  }
+}
+function damagePlayer(dmg, nx, nz, unblockable, invulnT) {
+  if (player.invuln > 0 || player.dead || player.state === 'musou') return;
+  if (player.airY > 0.02) dmg *= 0.5;   /* 浮空时更难被打中 */
+  /* 完美闪避：闪避前 0.14 s 内被击中 → 无伤 + 子弹时间 + 返还 CD */
+  if (player.dashT > 0.04 || player.dashEndT > 0.06) { perfectDodge(); return; }
+
 
   /* 格挡：0.16s 内按下 = 精准弹反（无伤 + 顿帧 + 震退周围 + 攒槽），之后按住 = 减伤 80% */
   if (!unblockable && player.blocking && player.hurtT <= 0) {
@@ -3451,6 +3507,7 @@ function damagePlayer(dmg, nx, nz, unblockable, invulnT) {
       shockRing(player.pos, 3.4, .32, 0xfff0c0);
       burst(_v3.copy(player.pos).setY(1.35), 16, { color: 0xfff0c0, speed: 8, up: 3, life: .35, size: .3, grav: -6 });
       popDamage(_v3.copy(player.pos).setY(2.0), '弹反', 'parry');
+      grantMomentum('反');
       /* 弹反把面前敌人打进硬直 */
       for (const s of E) {
         if (!s.active || s.dead) continue;
@@ -3662,7 +3719,32 @@ function tryDashAttack() {
   return true;
 }
 
+/* 见切反击：瞬移到最近敌人身后，打出一记必击飞的重斩，带无敌与慢动作 */
+function tryCounter() {
+  if (!(player.counterT > 0) || player.dead || G.state !== 'play') return false;
+  let best = null, bd = 7.5;
+  for (const s of E) {
+    if (!s.active || s.dead) continue;
+    const d = Math.hypot(s.pos.x - player.pos.x, s.pos.z - player.pos.z);
+    if (d < bd) { bd = d; best = s; }
+  }
+  player.counterT = 0;
+  if (!best) return false;
+  const dx = best.pos.x - player.pos.x, dz = best.pos.z - player.pos.z, d = Math.hypot(dx, dz) || 1;
+  burst(_v3.copy(player.pos).setY(1.1), 18, { color: 0x9fd0ff, speed: 5, up: 2, life: .35, size: .35, grav: -4 });
+  player.pos.x = best.pos.x + dx / d * 1.1; player.pos.z = best.pos.z + dz / d * 1.1;   /* 落在敌人背后 */
+  player.yaw = Math.atan2(-dx, -dz); player.dashT = 0; player.state = 'idle';
+  startAttack(2, 0.30, true);
+  player.atk.power = 1.8; player.atk.launch = true; player.atk.weight = 1.1;
+  player.invuln = Math.max(player.invuln, 0.5);
+  G.slow = Math.max(G.slow, 0.35); hitStop = Math.max(hitStop, 0.06);
+  shockRing(player.pos, 4.5, .35, 0x9fd0ff);
+  popDamage(_v3.copy(player.pos).setY(2.1), '反击', 'parry');
+  G.counterCount = (G.counterCount || 0) + 1;
+  return true;
+}
 function tryLight() {
+  if (tryCounter()) return;
   if (tryDashAttack()) return;
   if (G.state !== 'play' || player.dead) return;
   if (player.state === 'attack') { player.queued = true; return; }
@@ -4084,7 +4166,7 @@ function resetGame() {
   $('#upgrade').classList.add('hide');
   camYaw = 0; camPitch = 0.20;
   G.time = 0; G.boss = null; G.boss2Spawned = false; G.boss2Up = false; G.ended = false; G.slow = 0; G.spawnT = 0; G.lastKm = 0;
-  attackTokens = 0; chain = 0; chainT = 0; hitStop = 0;
+  attackTokens = 0; chain = 0; chainT = 0; hitStop = 0; player.momentumT = 0; G.lastComboMs = 0; G.momentumCount = 0; G.counterCount = 0; player.counterT = 0; player.dashEndT = 0;
   hpShown = player.maxhp; bossShown = 1;
   UI.hud.classList.add('on');
   player3.visible = true;
