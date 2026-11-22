@@ -68,8 +68,15 @@ import struct
 from pathlib import Path
 import bpy
 
-path = Path.cwd() / "demos/index.html"
+import os
+# TARGET：写回哪个产物（默认 WebGPU 版）。LEGACY=1 复现旧版（统一减面 42%）。
+path = Path.cwd() / os.environ.get("TARGET", "demos/index-webgpu.html")
+LEGACY = os.environ.get("LEGACY") == "1"
 html = path.read_text()
+# 每个身体部件的目标三角形数：先细分让曲面变圆，再减到目标面数（减面只去掉平坦处的面，轮廓保留）
+PART_TARGET = {"head": 1100, "torso": 1600, "skirt": 900, "arm": 700, "leg": 700}
+SUBDIVIDE = {"head", "arm", "leg"}            # 躯干/裙甲是硬甲片，不做 Catmull-Clark，避免甲缘被磨圆
+LOWPOLY = {}                                   # 旧版 42% 减面的结果，留给远景军阵用
 source = html.split("const GEO_B64 = {", 1)[1].split("\n};", 1)[0]
 parts = {}
 for line in source.splitlines():
@@ -83,7 +90,8 @@ for line in source.splitlines():
     colors = [struct.unpack_from("<BBBB", binary, 8 + nv * 12 + i * 4) for i in range(nv)]
     faces = [struct.unpack_from("<HHH", binary, 8 + nv * 16 + i * 6) for i in range(nt)]
     if name in {"torso", "skirt", "arm", "leg", "head"}:
-        mesh = bpy.data.meshes.new(name)
+      for lod in (("lo", "hi") if not LEGACY else ("lo",)):
+        mesh = bpy.data.meshes.new(name + "_" + lod)
         mesh.from_pydata(pos, [], faces)
         mesh.update()
         attribute = mesh.color_attributes.new(name="Col", type="FLOAT_COLOR", domain="POINT")
@@ -93,15 +101,25 @@ for line in source.splitlines():
         bpy.context.collection.objects.link(obj)
         bpy.context.view_layer.objects.active = obj
         obj.select_set(True)
+        if lod == "hi" and name in SUBDIVIDE:
+            sub = obj.modifiers.new("Round limbs and head", "SUBSURF")
+            sub.levels = sub.render_levels = 1
+            bpy.ops.object.modifier_apply(modifier=sub.name)
+        obj.data.calc_loop_triangles()
+        tris = max(1, len(obj.data.loop_triangles))
         modifier = obj.modifiers.new("Preserve bevel silhouette", "DECIMATE")
-        modifier.ratio = .42
+        modifier.ratio = .42 if lod == "lo" else min(1.0, PART_TARGET[name] / tris)
         modifier.use_collapse_triangulate = True
         bpy.ops.object.modifier_apply(modifier=modifier.name)
-        mesh = obj.data
-        mesh.calc_loop_triangles()
-        pos = [tuple(vertex.co) for vertex in mesh.vertices]
-        colors = [tuple(max(0, min(255, round(value * 255))) for value in color.color) for color in mesh.color_attributes["Col"].data]
-        faces = [tuple(triangle.vertices) for triangle in mesh.loop_triangles]
+        m2 = obj.data
+        m2.calc_loop_triangles()
+        out = ([tuple(vertex.co) for vertex in m2.vertices],
+               [tuple(max(0, min(255, round(value * 255))) for value in color.color) for color in m2.color_attributes["Col"].data],
+               [tuple(triangle.vertices) for triangle in m2.loop_triangles])
+        obj.select_set(False)
+        if lod == "lo": LOWPOLY[name] = out
+        else: pos, colors, faces = out
+      if LEGACY: pos, colors, faces = LOWPOLY[name]
     # Thin, beveled weapons are retained intact: decimating them destroys their silhouette.
     parts[name] = (pos, colors, faces)
 
@@ -142,13 +160,17 @@ def surface(color):
     return 3 if max(red,green,blue) < .2 else 0
 
 assets = {}
-for variant, weapon in [("hero","spear"),("dao","dao"),("spear","spear"),("archer","bow"),("officer","halberd")]:
+VARIANTS = [("hero","spear"),("dao","dao"),("spear","spear"),("archer","bow"),("officer","halberd")]
+if not LEGACY: VARIANTS.append(("crowd","spear"))   # 远景军阵：旧低模，避免 1800 个实例的面数翻倍
+for variant, weapon in VARIANTS:
+    # 只有主角与敌将用高模；杂兵与远景军阵用旧低模（同屏 170 个近战兵，面数是主要开销）
+    src = parts if variant in {"hero", "officer"} else LOWPOLY
     vertices, colors, triangles, surfaces, weights = [], [], [], [], []
     configs = [("torso",(0,.92,0),None),("skirt",(0,.90,0),1),("head",(0,.92,0),5),("arm",(-.29,1.5,0),7),("arm",(.29,1.5,0),11),("leg",(-.125,.90,0),14),("leg",(.125,.90,0),17),(weapon,world[20],20)]
     if variant in {"hero","officer"}:
         configs.append(("plume",(0,.94,0),5))
     for name, offset, joint in configs:
-        positions, source_colors, faces = parts[name]
+        positions, source_colors, faces = (src.get(name) or parts[name])
         start = len(vertices)
         for position, color in zip(positions, source_colors):
             v = [position[axis] + offset[axis] for axis in range(3)]
@@ -163,21 +185,21 @@ for variant, weapon in [("hero","spear"),("dao","dao"),("spear","spear"),("arche
             if variant == "hero" and name == "plume":
                 colors[-1], surfaces[-1] = [107,4,2,255], 0
             if joint is None:
-                t = max(0,min(1,(v[1]-1.06)/.32))
+                t = max(0,min(1,(v[1]-1.02)/.42))
                 weight = {1:1-t,3:t}
             elif joint in {7,11}:
                 # 上臂→前臂→手：两段平滑过渡，避免 .99 处权重硬跳造成的突跳
-                t = max(0,min(1,(1.25-v[1])/.12))
+                t = max(0,min(1,(1.29-v[1])/.20))
                 weight = {joint:1-t,joint+1:t}
                 if v[1] < 1.02:
-                    t2 = max(0,min(1,(1.02-v[1])/.07))
+                    t2 = max(0,min(1,(1.04-v[1])/.10))
                     weight = {joint+1:1-t2,joint+2:t2}
             elif joint in {14,17}:
                 # 大腿→小腿→脚：同样平滑
-                t = max(0,min(1,(.56-v[1])/.18))
+                t = max(0,min(1,(.62-v[1])/.26))
                 weight = {joint:1-t,joint+1:t}
                 if v[1] < .16:
-                    t2 = max(0,min(1,(.16-v[1])/.07))
+                    t2 = max(0,min(1,(.18-v[1])/.10))
                     weight = {joint+1:1-t2,joint+2:t2}
             else:
                 weight = {joint:1}
@@ -208,7 +230,7 @@ for variant, weapon in [("hero","spear"),("dao","dao"),("spear","spear"),("arche
             weights.append({3:t,1:1-t})
         triangles.extend(tuple(start+i for i in triangle.vertices) for triangle in cloak.loop_triangles)
     nv, nt = len(vertices), len(triangles)
-    assert nt <= 3500 and len(parents) <= 24
+    assert nt <= 12000 and nv < 65535 and len(parents) <= 24
     binary = bytearray(struct.pack("<II",nv,nt))
     for vertex in vertices:
         binary += struct.pack("<fff",*vertex)
@@ -244,8 +266,10 @@ match = re.search(r"const SKIN_B64 = (\{[^\n]+\});",html)
 html = html[:match.start(1)] + json.dumps(assets,separators=(",",":")) + html[match.end(1):]
 # CSP 不再用 sha256 钉住内联脚本：那样每次改代码都会让整页白屏。
 # 保持"外部脚本只允许 three CDN"的限制，同时允许内联与自动化所需的 eval。
+ver = re.search(r"three@([0-9.]+)/", html)
+ver = ver.group(1) if ver else "0.160.0"
 html = re.sub(r"script-src [^;]+;",
-              "script-src 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net/npm/three@0.160.0/;",
+              "script-src 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net/npm/three@" + ver + "/;",
               html, count=1)
 path.write_text(html)
 print("Updated only",path)
