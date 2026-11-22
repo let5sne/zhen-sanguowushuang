@@ -255,7 +255,7 @@ import { Fn, uniform, attribute, texture, textureLoad, pass, uv, vec2, vec3, vec
   positionWorld, positionLocal, positionGeometry, normalView, positionViewDirection, cameraPosition,
   cameraProjectionMatrixInverse, cameraWorldMatrix, getViewPosition, materialColor, materialOpacity, materialSheen, luminance,
   instancedArray, storage, instanceIndex, hash, Return, Break, sqrt,
-  viewportDepthTexture, perspectiveDepthToViewZ, cameraNear, cameraFar, positionView, saturate, time, screenUV, cameraViewMatrix } from 'three/tsl';
+  viewportDepthTexture, perspectiveDepthToViewZ, cameraNear, cameraFar, positionView, saturate, time, screenUV, cameraViewMatrix, normalGeometry, atan2 } from 'three/tsl';
 import { bloom as bloomNode } from 'three/addons/tsl/display/BloomNode.js';
 import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 import { CSMShadowNode } from 'three/addons/csm/CSMShadowNode.js';
@@ -1712,6 +1712,7 @@ function burst(pos, n, opt = {}) {
   }
 }
 function updateParticles(dt) {
+  crStep(dt);
   if (GPU_FX) { gpuParticlesStep(dt); return; }
   for (let i = 0; i < PMAX; i++) {
     if (pLife[i] <= 0) { if (pAlpha[i] !== 0) { pAlpha[i] = 0; pSize[i] = 0; } continue; }
@@ -2363,6 +2364,145 @@ shadowIM.renderOrder = 1;
 scene.add(shadowIM);
 for (let i = 0; i < MAXE + 4; i++) shadowIM.setMatrixAt(i, ZERO_M);
 
+/* ============================================================
+   7b. 千人战场：GPU 远景军阵（WebGPU 计算着色器）
+   ------------------------------------------------------------
+   近战圈（< 32 m）仍是原来的 170 个完整 AI 单位；32~110 m 之外再放 CR_N 个"远景兵"，
+   位置/朝向/步态全部在计算着色器里推进（向玩家周围的环形阵位行军、带阵列抖动与左右摆），
+   渲染用一次实例化绘制：骨骼模型的绑定姿态 + 顶点着色器里的行走摆动，不走 CPU 蒙皮。
+   它们不参与战斗判定，只负责"千军万马"的规模感；WebGL2 回退时关闭。
+   ============================================================ */
+const CR_N = GPU_FX ? (LOWQ ? 600 : 3000) : 0;   /* 容量；实际绘制数由 crowd(n) 或画质档位控制 */
+const CR_U = { dt: uniform(0), time: uniform(0), player: uniform(new THREE.Vector2()), rot: uniform(0) };
+const CR_MIRROR = { ring: null, attr: null, hidden: null };   /* CPU 侧镜像：阵位参数不变，可在 CPU 推算位置，无需 GPU 回读 */
+let crMesh = null, crStep = () => {};
+if (CR_N > 0) {
+  const crA = instancedArray(CR_N, 'vec4');   /* x, z, yaw, phase */
+  const crB = instancedArray(CR_N, 'vec4');   /* vx, vz, ringR, ringA */
+  const crC = instancedArray(CR_N, 'vec4');   /* hiddenUntil(time), -, -, - */
+  CR_MIRROR.ring = crB.value.array; CR_MIRROR.attr = crC.value; CR_MIRROR.pos = crA.value;
+  { /* CPU 初始化：分 3 圈，各圈错开 */
+    const a = crA.value.array, b = crB.value.array;
+    for (let i = 0; i < CR_N; i++) {
+      const ring = 36 + (i % 3) * 22 + Math.random() * 14, ang = Math.random() * TAU;
+      a[i*4] = Math.cos(ang) * ring; a[i*4+1] = 14 + Math.sin(ang) * ring; a[i*4+2] = ang + Math.PI; a[i*4+3] = Math.random() * 10;
+      b[i*4] = 0; b[i*4+1] = 0; b[i*4+2] = ring; b[i*4+3] = ang;
+    }
+    crA.value.needsUpdate = true; crB.value.needsUpdate = true;
+  }
+  const crSim = Fn(() => {
+    const A = crA.element(instanceIndex), B = crB.element(instanceIndex);
+    const dt = CR_U.dt;
+    /* 阵位：围绕玩家的环，整圈缓慢旋转，单兵带一点前后错位 */
+    const ang = B.w.add(CR_U.rot.mul(select(B.z.greaterThan(58), float(-1), float(1))));
+    const R = B.z.add(sin(CR_U.time.mul(.37).add(B.w.mul(7.0))).mul(2.5));
+    const tgt = CR_U.player.add(vec2(cos(ang), sin(ang)).mul(R));
+    /* 场地边界 */
+    const tl = length(tgt), lim = float(GROUND_R - 6);
+    const tgtC = select(tl.greaterThan(lim), tgt.mul(lim.div(tl)), tgt);
+    const to = tgtC.sub(A.xy), dist = length(to);
+    const desired = select(dist.greaterThan(.4), to.div(dist).mul(clamp(dist.mul(.35), 0, 3.1)), vec2(0));
+    const v = mix(B.xy, desired, clamp(dt.mul(1.6), 0, 1));
+    const np = A.xy.add(v.mul(dt));
+    const sp = length(v);
+    /* 朝向：移动时朝速度方向，站定时朝玩家 */
+    const face = select(sp.greaterThan(.25), v, CR_U.player.sub(np));
+    const yawT = atan2(face.x, face.y);
+    A.assign(vec4(np, yawT, A.w.add(sp.mul(dt).mul(2.4))));
+    B.assign(vec4(v, B.z, B.w));
+  })().compute(CR_N);
+
+  const crR = storage(crA.value, 'vec4', CR_N).toReadOnly();
+  const crV = storage(crB.value, 'vec4', CR_N).toReadOnly();
+  const crH = storage(crC.value, 'vec4', CR_N).toReadOnly();
+  CR_MIRROR.hidden = new Float32Array(CR_N);
+  const src = RIGS.spear.geometry;
+  const g = new THREE.InstancedBufferGeometry();
+  g.index = src.index;
+  for (const k of ['position', 'normal', 'color']) g.setAttribute(k, src.attributes[k]);
+  g.instanceCount = CR_N;
+  const m = new THREE.MeshStandardNodeMaterial({ vertexColors: true, roughness: .85, metalness: .05, envMap: scene.environment, envMapIntensity: .6 });
+  {
+    const A = crR.element(instanceIndex), V = crV.element(instanceIndex);
+    const yaw = A.z, cy = cos(yaw), sy = sin(yaw);
+    const sp = clamp(length(V.xy).div(3), 0, 1);
+    const ph = A.w;
+    const pg = positionGeometry;
+    /* 行走摆动：腿前后摆、身体上下颠、轻微左右晃（按高度分区，越低摆幅越大） */
+    const leg = smoothstep(.95, .2, pg.y).mul(sp);
+    const side = select(pg.x.greaterThan(0), float(1), float(-1));
+    const swing = sin(ph.mul(Math.PI)).mul(leg).mul(.32).mul(side);
+    const bob = abs(sin(ph.mul(Math.PI))).mul(.06).mul(sp);
+    const lp = vec3(pg.x.add(sin(ph.mul(Math.PI * .5)).mul(.025).mul(sp)), pg.y.add(bob), pg.z.add(swing));
+    const shown = step(crH.element(instanceIndex).x, CR_U.time);   /* 被"借走"去当近战兵的那个，隐藏到归队时间 */
+    const scl = float(1).add(hash(float(instanceIndex).mul(.37)).sub(.5).mul(.08)).mul(shown);
+    const rp = vec3(lp.x.mul(cy).add(lp.z.mul(sy)), lp.y, lp.z.mul(cy).sub(lp.x.mul(sy))).mul(scl);
+    m.positionNode = rp.add(vec3(A.x, 0, A.y));
+    const n = normalGeometry;
+    const rn = vec3(n.x.mul(cy).add(n.z.mul(sy)), n.y, n.z.mul(cy).sub(n.x.mul(sy)));
+    m.normalNode = cameraViewMatrix.mul(vec4(rn, 0)).xyz.normalize();
+    /* 阵营色：枪兵蓝为主，掺刀兵褐，越远越被雾吞 */
+    const pick = hash(float(instanceIndex).mul(1.91));
+    m.colorNode = mix(color(0x6f86ad), color(0xa07a5a), step(.62, pick));
+  }
+  crMesh = new THREE.Mesh(g, m);
+  crMesh.frustumCulled = false; crMesh.castShadow = false; crMesh.receiveShadow = true;
+  crMesh.name = 'gpu-crowd';
+  g.instanceCount = Math.min(CR_N, LOWQ ? 600 : 1800);   /* 默认 1800（M1 实测 60 fps；3000 时 ~55 fps） */
+  scene.add(crMesh);
+  crStep = (dt) => {
+    CR_U.dt.value = Math.min(dt, 1 / 20);
+    CR_U.time.value += dt;
+    CR_U.rot.value += dt * .012;
+    CR_U.player.value.set(player.pos.x, player.pos.z);
+    renderer.compute(crSim);
+  };
+}
+/* 远近交接：近战圈要补兵时，从内圈远景兵里"借"一个——在它当前站位生成真 AI 兵并隐藏它；
+   真兵冲向玩家参战，阵里那个空位 HIDE_S 秒后才有人补回（视作援军填位）。 */
+const CR_HIDE_S = 14;
+function crowdTakeSlot() {
+  if (!crMesh || !CR_MIRROR.ring) return null;
+  const n = crMesh.geometry.instanceCount, ring = CR_MIRROR.ring, now = CR_U.time.value;
+  for (let tries = 0; tries < 24; tries++) {
+    const i = (Math.random() * n) | 0;
+    const R = ring[i * 4 + 2];
+    if (R > 52 || CR_MIRROR.hidden[i] > now) continue;          /* 只借内圈、且没被借走的 */
+    const ang = ring[i * 4 + 3] + CR_U.rot.value;                 /* 内圈旋转方向 +1（与着色器一致） */
+    let x = player.pos.x + Math.cos(ang) * R, z = player.pos.z + Math.sin(ang) * R;
+    const l = Math.hypot(x, z), lim = GROUND_R - 6;
+    if (l > lim) { x *= lim / l; z *= lim / l; }
+    CR_MIRROR.hidden[i] = now + CR_HIDE_S;
+    const gb = renderer.backend.get(CR_MIRROR.attr);
+    if (gb && gb.buffer) renderer.backend.device.queue.writeBuffer(gb.buffer, i * 16, new Float32Array([now + CR_HIDE_S, 0, 0, 0]));
+    GP_HANDOFF.count++;
+    return { x, z, i };
+  }
+  return null;
+}
+const GP_HANDOFF = { count: 0, back: 0 };
+/* 反向交接：近战兵被打飞/走出 CR_OUT 米并停留 CR_OUT_T 秒 → 回归军阵。
+   若它是从军阵借出来的，就让原阵位立刻重新显示；否则随机点亮一个内圈空位。 */
+const CR_OUT = 40, CR_OUT_T = 1.2;
+function crowdSetHidden(i, until) {
+  CR_MIRROR.hidden[i] = until;
+  const gb = renderer.backend.get(CR_MIRROR.attr);
+  if (gb && gb.buffer) renderer.backend.device.queue.writeBuffer(gb.buffer, i * 16, new Float32Array([until, 0, 0, 0]));
+}
+function crowdReturn(s) {
+  if (!crMesh || !CR_MIRROR.ring) return false;
+  const now = CR_U.time.value;
+  let i = s.crSlot;
+  if (!(i >= 0)) {                     /* 非借出的兵：找一个仍处于"空位"状态的阵位补进去 */
+    for (let t = 0; t < 24; t++) { const k = (Math.random() * crMesh.geometry.instanceCount) | 0; if (CR_MIRROR.hidden[k] > now) { i = k; break; } }
+  }
+  if (i >= 0) crowdSetHidden(i, 0);
+  s.active = false; s.crSlot = -1; s.outT = 0;
+  GP_HANDOFF.back++;
+  return true;
+}
+
+
 /* ---------------- 敌兵数据 ---------------- */
 const TYPES = {
   dao: { hp: 30, spd: 3.05, dmg: 3.4, range: 2.35, wind: .40, strike: .13, rec: .38, scale: 1.00, tint: 0x8a5a3a, reach: 2.5, score: 1, poise: 1 },
@@ -2390,7 +2530,7 @@ function spawnEnemy(type, x, z, opt = {}) {
   s.spd = d.spd * rand(.92, 1.08); s.dmg = d.dmg * (G.dmgMul || 1); s.range = d.range; s.reach = d.reach;
   s.scale = d.scale * (opt.scale || 1) * rand(.96, 1.04);
   s.state = 'chase'; s.t = 0; s.atkP = 0; s.cool = rand(.2, 1.4); s.phase = rand(0, TAU);
-  s.flash = 0; s.tilt = 0; s.dead = false; s.deadT = 0; s.spawnT = 0;
+  s.flash = 0; s.tilt = 0; s.dead = false; s.deadT = 0; s.spawnT = 0; s.crSlot = -1; s.outT = 0; s.engaged = false;
   s.officer = !!opt.officer; s.name = opt.name || '';
   /* 阵型角色：刀兵前排、枪兵侧翼、弓兵后排 */
   s.role = opt.officer ? 'boss' : (type === 'archer' ? 'back' : (type === 'spear' ? 'flank' : 'front'));
@@ -2617,6 +2757,13 @@ function updateEnemies(dt) {
     const dx = px - s.pos.x, dz = pz - s.pos.z;
     const dist = Math.hypot(dx, dz) || 0.0001;
     const nx = dx / dist, nz = dz / dist;
+    /* 反向交接：杂兵（非敌将、未被击飞中）离开近战圈太久 → 回军阵，腾出近战名额 */
+    if (crMesh && !s.officer && !s.airborne) {
+      /* 刚从军阵走出的兵起点就在 36~52 m，必须先真正进入近战圈（engaged）后才可能被判"离场"，否则会反复进出 */
+      if (dist < CR_OUT - 6) s.engaged = true;
+      if (s.engaged && dist > CR_OUT) { s.outT += dt; if (s.outT > CR_OUT_T) { crowdReturn(s); continue; } }
+      else s.outT = 0;
+    }
 
 
     s.cool -= dt;
@@ -3965,9 +4112,10 @@ function updateDirector(dt) {
     G.spawnT = (gap > 12 ? 0.10 : (gap > 4 ? 0.26 : 0.55)) * PRESSURE.spawnMul;
     const n = Math.min(gap > 12 ? 3 : 1, gap);
     for (let i = 0; i < n; i++) {
-      const a = rand(0, TAU), r = rand(24, 32);
       const t = rollType();
-      spawnEnemy(t, player.pos.x + Math.cos(a) * r, player.pos.z + Math.sin(a) * r);
+      const slot = crowdTakeSlot();   /* 优先从远景军阵里走出来 */
+      if (slot) { const e = spawnEnemy(t, slot.x, slot.z); if (e) e.crSlot = slot.i; }
+      else { const a = rand(0, TAU), r = rand(24, 32); spawnEnemy(t, player.pos.x + Math.cos(a) * r, player.pos.z + Math.sin(a) * r); }
     }
   }
 
@@ -4234,6 +4382,7 @@ function applyQuality() {
   atmosphere.samples = LOWQ ? 4 : (quality < .7 ? 4 : 8);
   atmosphere.volumetrics = !LOWQ && quality >= .7;
   dustGeo.instanceCount = Math.floor(DUST_N * quality * (LOWQ ? .5 : 1));
+  if (crMesh) crMesh.geometry.instanceCount = Math.floor(Math.min(CR_N, LOWQ ? 600 : 1800) * clamp((quality - .45) / .55, .25, 1));   /* 掉帧时先砍远景兵 */
   /* 阴影贴图尺寸在 WebGPU 下固定（运行时重建 shadow map 不稳定） */
 }
 
@@ -4329,6 +4478,16 @@ window.__dbg = {
   gpVis(v) { GP_VIS.value = v; },
   gpAir0(v) { if (v !== undefined) GP_AIR0.value = v; return GP_AIR0.value; },
   airPuff(x, y, z, n = 80, color = 0x3a3430) { gpuBurst(_v3.set(x, y, z), n, { color, add: false, speed: .6, up: .2, life: 3, size: 1.2, grav: 0, drag: 2, grow: 2 }); },
+  handoffs() { return { out: GP_HANDOFF.count, back: GP_HANDOFF.back }; },
+  pushAway(n = 10, d = 46) { let c = 0; for (const s of E) { if (c >= n) break; if (s.active && !s.dead && !s.officer && s.engaged) { const a = Math.atan2(s.pos.z - player.pos.z, s.pos.x - player.pos.x); s.pos.x = player.pos.x + Math.cos(a) * d; s.pos.z = player.pos.z + Math.sin(a) * d; c++; } } return c; },
+  async handoffCheck(k = 12) {
+    const pos = new Float32Array(await renderer.getArrayBufferAsync(CR_MIRROR.pos));
+    const errs = [];
+    for (let t = 0; t < k; t++) { const r = crowdTakeSlot(); if (!r) continue; errs.push(Math.hypot(pos[r.i*4] - r.x, pos[r.i*4+1] - r.z)); }
+    errs.sort((a, b) => a - b);
+    return { n: errs.length, median: +(errs[errs.length >> 1] || 0).toFixed(2), max: +(errs[errs.length - 1] || 0).toFixed(2) };
+  },
+  crowd(n) { if (crMesh) { if (n !== undefined) crMesh.geometry.instanceCount = Math.min(n, CR_N); return { capacity: CR_N, drawn: crMesh.geometry.instanceCount }; } return { capacity: 0 }; },
   gpuParticles() { return { enabled: GPU_FX, capacity: GP_N, perBurstMul: FX_MUL, spawnedLastFrame: GP.spawnedLast, spawnedTotal: GP.spawnedAll }; },
   jump() { tryJump(); return player.airY; },
   execute() { return tryExecute(); },
